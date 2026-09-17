@@ -227,6 +227,16 @@ Packages considered and **not** chosen, with reasons, get added to this table as
 made in later phases (e.g. Breeze/Fortify vs. hand-rolled auth — see `docs/SECURITY.md` §Auth).
 No package is added to `composer.json` without a row here first.
 
+## 6a. Local development environment — decided
+
+Local development uses **Laravel Sail** (Docker-based), so the local PHP version matches
+production exactly (PHP 8.2, MySQL) despite the host machine's system PHP being 8.5.8. Docker
+Desktop is already installed on the development machine. Day-to-day commands go through
+`./vendor/bin/sail` (`sail artisan`, `sail composer`, `sail test`, ...) instead of bare `php`/
+`composer`/`artisan`. Sail is dev-only tooling — it is never part of the production cPanel
+deployment (`docs/DEPLOYMENT_CPANEL.md`), which runs natively on the host's PHP 8.2 with no
+Docker involved at all.
+
 ## 7. Hosting fit checklist
 
 - No Redis: sessions/cache use the `database` driver; queue uses the `database` driver too.

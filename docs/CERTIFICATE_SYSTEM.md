@@ -34,7 +34,12 @@ and try importing it with plain `setasign/fpdi`. Three possible outcomes:
    that as a raster background" isn't reliably available without adding a hosting dependency that
    may not exist on the target cPanel account.
 
-Document the outcome and final decision in this file's changelog entry once resolved.
+**Decision (2026-09-17)**: proceed with the open-source `setasign/fpdi` + `tecnickphp/tcpdf` stack
+as planned. Do not pre-purchase the commercial FPDI PDF-Parser add-on. The real test happens in
+Phase 4 when a genuine Canva-exported certificate PDF is uploaded through the template editor for
+the first time. If that import fails due to the PDF-1.4 ceiling, stop and get an explicit decision
+from the user at that point (buy the commercial add-on vs. require admins to flatten/downgrade the
+PDF before upload) rather than silently working around it.
 
 ## Template lifecycle
 
