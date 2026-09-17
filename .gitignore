@@ -1,0 +1,45 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# Laravel (added ahead of Phase 1 so the ignore rules are in place before the app is scaffolded)
+/vendor/
+/node_modules/
+/public/build/
+/public/hot
+/public/storage
+/storage/*.key
+/storage/app/private/*
+!/storage/app/private/.gitkeep
+/storage/framework/cache/*
+!/storage/framework/cache/.gitkeep
+/storage/framework/sessions/*
+!/storage/framework/sessions/.gitkeep
+/storage/framework/testing/*
+!/storage/framework/testing/.gitkeep
+/storage/framework/views/*
+!/storage/framework/views/.gitkeep
+/storage/logs/*
+!/storage/logs/.gitkeep
+/bootstrap/cache/*.php
+Homestead.json
+Homestead.yaml
+auth.json
+.phpunit.result.cache
+.phpunit.cache/
+
+# Archived QR-generator prototype's own ignores (kept, for consistency, in case it's ever run
+# locally for reference rather than just read) — see reference/qr-generator/*/README.md
+reference/qr-generator/*/.venv/
+reference/qr-generator/*/__pycache__/
+reference/qr-generator/*/registrations/*.xlsx
+reference/qr-generator/*/registrations.xlsx
+reference/qr-generator/*/static/qr/*.png

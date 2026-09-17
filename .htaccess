@@ -1,0 +1,89 @@
+# Every page is a .php file on disk (about.php, committee.php, contact.php,
+# events.php, becithcon-2026.php, hta-2026.php, membership.php; index.php),
+# but no visitor-facing URL ever shows the .php extension — the rules below
+# hide it in both directions, so nothing about the backend language is visible
+# in the address bar, page source, or search results:
+#   1. A clean URL like /about is served from about.php invisibly (no
+#      redirect) via an internal rewrite. The event pages (hta-2026.php,
+#      becithcon-2026.php, still root-level files) are additionally namespaced
+#      under /event/, so their clean URLs are /event/hta-2026 and
+#      /event/becithcon-2026 — a virtual path segment, not a real directory
+#      (kept flat on disk so their includes stay unchanged).
+#   2. Anyone who still requests the .php form (old link, bookmark, search
+#      result) gets a 301 to the clean URL, so .php never sticks anywhere.
+#   3. The old pre-PHP-conversion .html URLs (still indexed) and the
+#      exhibition page's earlier slugs 301 straight to the current clean
+#      URL — no intermediate hops.
+#
+# All of the redirect rules below match against %{THE_REQUEST} (the client's
+# original request line) rather than the rewritten path. That's deliberate:
+# per-directory mod_rewrite re-runs this whole ruleset against the new path
+# after every internal rewrite, and matching a redirect rule's pattern
+# against that rewritten path (e.g. hta-2026.php, produced internally by
+# rule 3 below) would make it collide with its own legacy-redirect rule and
+# loop back on itself. THE_REQUEST only ever reflects the real inbound
+# request, so it can't be re-triggered by an internal rewrite.
+#
+# These rules require mod_rewrite (Apache / LiteSpeed — both fine on cPanel).
+# If the host ever runs nginx (which ignores .htaccess), mirror them in the
+# server/site config instead:
+#   rewrite ^/index\.html$ / permanent;
+#   rewrite ^/(about|committee|contact|events|membership)\.html$ /$1 permanent;
+#   rewrite ^/humanitarian-project-exhibition-2026(\.html|\.php)?$ /event/hta-2026 permanent;
+#   rewrite ^/hpe-2026(\.php)?$ /event/hta-2026 permanent;
+#   rewrite ^/event/hpe-2026/?$ /event/hta-2026 permanent;
+#   rewrite ^/index\.php$ / permanent;
+#   rewrite ^/(.+)\.php$ /$1 permanent;
+#   location = /event/hta-2026 { try_files /hta-2026.php =404; }
+#   location = /event/becithcon-2026 { try_files /becithcon-2026.php =404; }
+#   location / { try_files $uri $uri.php $uri/ =404; }
+
+DirectoryIndex index.php index.html
+
+RewriteEngine On
+
+# --- 1. Legacy URLs: straight to the current canonical clean URL ---------
+RewriteCond %{THE_REQUEST} \s/+index\.html[?\s] [NC]
+RewriteRule ^ / [R=301,L]
+
+RewriteCond %{THE_REQUEST} \s/+(about|committee|contact|events|membership)\.html[?\s] [NC]
+RewriteRule ^ /%1 [R=301,L]
+
+# The HTA exhibition page has been through three slugs on its way to
+# /event/hta-2026 — the original long filename/URL, a brief bare /hpe-2026,
+# then /event/hpe-2026 before HPE was renamed HTA. Catch every old form
+# (.html, .php, extensionless, and the old /event/ path) in one place.
+RewriteCond %{THE_REQUEST} \s/+humanitarian-project-exhibition-2026(\.html|\.php)?[?\s] [NC]
+RewriteRule ^ /event/hta-2026 [R=301,L]
+
+RewriteCond %{THE_REQUEST} \s/+hpe-2026(\.php)?[?\s] [NC]
+RewriteRule ^ /event/hta-2026 [R=301,L]
+
+RewriteCond %{THE_REQUEST} \s+/event/hpe-2026/?[?\s] [NC]
+RewriteRule ^ /event/hta-2026 [R=301,L]
+
+# --- 2. Hide .php from the address bar for every other page --------------
+# /index.php collapses to the site root rather than redirecting to /index.
+RewriteCond %{THE_REQUEST} \s/+index\.php[?\s] [NC]
+RewriteRule ^ / [R=301,L]
+RewriteCond %{THE_REQUEST} \s/+([^?\s]+)\.php[?\s] [NC]
+RewriteRule ^ /%1 [R=301,L]
+
+# --- 3. /event/... -> the real files, which stay at the document root
+#        (not physically nested — each page's includes are written relative
+#        to the site root, so moving the files would break them) -----------
+RewriteRule ^event/hta-2026/?$ hta-2026.php [L]
+RewriteRule ^event/becithcon-2026/?$ becithcon-2026.php [L]
+
+# --- 4. Serve every other clean URL from its real .php file, invisibly ---
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}\.php -f
+RewriteRule ^(.*)$ $1.php [L]
+
+# php -- BEGIN cPanel-generated handler, do not edit
+# Set the “ea-php83” package as the default “PHP” programming language.
+<IfModule mime_module>
+  AddHandler application/x-httpd-ea-php83___lsphp .php .php8 .phtml
+</IfModule>
+# php -- END cPanel-generated handler, do not edit
