@@ -44,6 +44,21 @@ cp .env.example .env     # already done if you cloned this repo with its committ
 
 The app will be available at `http://localhost`.
 
+### Windows + Docker Desktop: one-time permissions fix
+
+On Windows, Docker Desktop's bind mount can present `storage/` and `bootstrap/cache/` as
+`root:root` inside the container, which the container's `sail` user (uid 1000) can't write to —
+this breaks compiled view caching (`tempnam(): file created in the system's temporary directory`,
+followed by a 500 error) the first time you request a page. If you hit that, run once after
+`sail up`:
+
+```bash
+docker compose exec laravel.test chmod -R ugo+rwX storage bootstrap/cache
+```
+
+Not needed on macOS/Linux hosts, and not relevant to production (which doesn't use Docker at all —
+see `docs/DEPLOYMENT_CPANEL.md`).
+
 ## Reference material (not part of the running application)
 
 - `reference/legacy-site/` — the original plain-PHP site this project migrates from. Kept for

@@ -1,0 +1,28 @@
+{
+  "name": "IEEE IUBAT Student Branch",
+  "short_name": "IEEE IUBAT",
+  "description": "The official IEEE student community at IUBAT — workshops, exhibitions, training programs and more for engineering students in Bangladesh.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#00629B",
+  "icons": [
+    {
+      "src": "assets/img/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/img/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/img/logo.png",
+      "sizes": "240x239",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

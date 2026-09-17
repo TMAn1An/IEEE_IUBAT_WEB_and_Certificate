@@ -40,6 +40,17 @@ registers the whole table from one array) in `routes/web.php`, rather than relyi
 trick. Implement and test every row in this table as part of Phase 1 — see the "every legacy URL
 redirects correctly" requirement in `docs/TESTING.md`.
 
+**Implemented in Phase 1** (`routes/web.php`), verified with an automated test
+(`tests/Feature/PublicSiteTest.php::test_legacy_urls_redirect_to_canonical_urls`) covering every
+row above. One documented edge case: a request for `/index.php` specifically (not `/index.html`,
+which works normally) returns 200 with the home page's content directly rather than a visible 301,
+because `public/index.php` is a real file (Laravel's own front controller) and Symfony's
+HttpFoundation strips the front-controller's own filename from the resolved path before routing
+ever sees it — so the home route matches directly. Not a functional break (the visitor still gets
+the correct page) and not a URL that's indexed anywhere in `sitemap.xml`; noted here rather than
+fixed because forcing a redirect for this one specific case would mean special-casing Laravel's
+front-controller resolution, which isn't worth the complexity for a URL nobody links to.
+
 ### Assets — same public paths
 
 `/assets/css/style.css`, `/assets/js/main.js`, `/assets/js/particles.js`, `/assets/js/voxel-qr.js`,
