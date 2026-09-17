@@ -15,8 +15,8 @@ hosting without extra moving parts (no separate services, no Docker, no Node ser
 
 ## 2. Folder layout
 
-**Status**: reflects what's actually built through Phase 2. Items still marked as planned (not yet
-created) are for Phase 3 onward — see `docs/CHANGELOG.md` for what landed in which phase.
+**Status**: reflects what's actually built through Phase 3. Items still marked as planned (not yet
+created) are for Phase 4 onward — see `docs/CHANGELOG.md` for what landed in which phase.
 
 ```
 app/
@@ -28,34 +28,45 @@ app/
         AuthController.php         # login/logout only — no registration (Phase 2)
         DashboardController.php    # Phase 2
         UserController.php         # Super-Admin-only user management (Phase 2)
-        ComingSoonController.php   # honest placeholders for not-yet-built nav sections (Phase 2)
-        # planned: TemplateController, CertificateController, BatchController (later phases)
+        ComingSoonController.php   # honest placeholders for not-yet-built nav sections (Phase 2/3)
+        TemplateController.php     # template CRUD + activate/archive — both admin roles (Phase 3)
+        TemplateFieldController.php # field CRUD + move-up/move-down (Phase 3)
+        # planned: CertificateController, BatchController (later phases)
       VerificationController.php   # planned: public GET /verify/{codeword} (Phase 6)
     Middleware/
       EnsureUserIsActive.php       # 'active' alias — blocks a deactivated account mid-session (Phase 2)
     Requests/
       Admin/
         StoreUserRequest.php, UpdateUserRequest.php   # Phase 2
-        # planned: StoreCertificateTemplateRequest, GenerateSingleCertificateRequest, etc.
+        Store/UpdateCertificateTemplateRequest.php    # Phase 3
+        Store/UpdateTemplateFieldRequest.php          # Phase 3 — field-key format/uniqueness,
+                                                        # dropdown-options, recipient-only-on-text
+        # planned: GenerateSingleCertificateRequest, UploadBatchRequest, etc.
   Policies/
     UserPolicy.php                 # Super-Admin-only user management, auto-discovered (Phase 2)
+    CertificateTemplatePolicy.php  # both admin roles, auto-discovered (Phase 3)
   Enums/
     UserRole.php, CertificateTemplateStatus.php, TemplateFieldType.php,
     CertificateBatchStatus.php, CertificateStatus.php    # Phase 2 — see docs/DATABASE_DESIGN.md
+    # TemplateFieldType::assignable() added Phase 3 — the system-fields-vs-input-fields boundary,
+    # see docs/CERTIFICATE_SYSTEM.md §System fields vs. input fields
   Console/Commands/
     MakeAdminCommand.php           # `php artisan app:make-admin` — first production Super Admin (Phase 2)
   Models/
     User.php
     CertificateTemplate.php
-    TemplateField.php
+    TemplateField.php              # is_recipient_name cast added Phase 3
     CertificateBatch.php
     Certificate.php
     # planned: VerificationLog, AuditLog (Phase 6/9)
   Services/
     SiteContentService.php   # public-site computed content (eventPhase(), headerAlert(), etc. — Phase 1)
+    Templates/
+      TemplateService.php        # slug generation, activation validation gate (Phase 3)
+      TemplateFieldService.php   # field-key rules, recipient exclusivity, reordering (Phase 3)
     # planned (Phase 4-8): Certificates/CertificateNumberGenerator, Certificates/CodewordGenerator,
     # Certificates/CertificateGenerationService, Certificates/CertificateRevocationService,
-    # Templates/TemplateFieldSchemaService, Templates/PdfCoordinateService,
+    # Templates/PdfCoordinateService (position/style — distinct from TemplateService above),
     # Pdf/CertificatePdfService, Qr/QrCodeService, Excel/ExcelTemplateExportService,
     # Excel/ExcelImportValidationService, Excel/BulkCertificateGenerationService
   Support/Site/
@@ -76,7 +87,10 @@ resources/
       dashboard.blade.php
       coming-soon.blade.php   # one generic view for not-yet-built nav sections
       users/ (index, create, edit)
-      # planned: templates/, certificates/, batches/ (later phases)
+      templates/ (index, create, edit — edit IS the detail/management page: metadata form,
+                   field table, "Add field" link, Form Preview) — Phase 3
+      templates/fields/ (create, edit, and a shared _form.blade.php partial both include) — Phase 3
+      # planned: certificates/, batches/ (later phases)
     verify/                   # planned (Phase 6): show, not-found, revoked
 
 public/

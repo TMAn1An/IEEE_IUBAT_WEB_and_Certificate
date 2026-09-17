@@ -143,3 +143,79 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   verified, rate-limit numbers now decided). `CLAUDE.md` needed no changes — its rules already
   anticipated this implementation. Certificate template/generation/QR/Excel functionality
   intentionally not started beyond the database/model foundation, per the brief.
+
+## Phase 3 — Certificate template management + dynamic fields (2026-09-17)
+
+- **Database**: one migration, `add_is_recipient_name_to_template_fields_table` (boolean, default
+  `false`). Verified rollback-safe. No other schema changes — everything else builds on the
+  Phase 2 `certificate_templates`/`template_fields` tables as-is.
+- **Enums**: `TemplateFieldType::assignable()` / `isAssignable()` — the only types an admin can pick
+  in Phase 3 (`text`, `long_text`, `number`, `date`, `dropdown`); `certificate_number` and `qr_code`
+  are excluded and documented as system-managed layout elements, never ordinary input fields (see
+  `docs/CERTIFICATE_SYSTEM.md` §System fields vs. input fields — this is the distinction the brief
+  asked to be prepared for Phase 4, without building the PDF-placement side of it yet).
+  `CertificateTemplateStatus::badgeClass()` for the admin UI's status badges.
+- **Services** (`app/Services/Templates/`): `TemplateService` (unique slug generation from the
+  name; `activationErrors()`/`activate()` — the 5-rule draft→active gate the brief specified, kept
+  deliberately separate from any PDF/"generation ready" concept, which is Phase 4/5's job, not
+  this one's) and `TemplateFieldService` (field-key format + reserved-word validation as a static
+  helper reused by both Form Requests and the activation gate; recipient-field exclusivity —
+  setting one field's flag transactionally clears any other on the same template; Move Up/Move
+  Down as a plain sort_order swap with the adjacent row, not drag/drop). Controllers stay thin —
+  one service call each, per CLAUDE.md.
+- **Authorization**: `CertificateTemplatePolicy` (auto-discovered), explicit and permissive for
+  both admin roles per the brief ("both super_admin and certificate_manager may manage
+  templates") — written as a real policy rather than relying on "only two roles exist right now"
+  so a future, more restricted third role wouldn't silently inherit template access.
+- **Admin UI**: Templates index/create + a single edit page that doubles as the template's detail/
+  management screen (metadata form, field table with Recipient/Required/Public-Verification
+  badges and Edit/Remove/Move-Up/Move-Down actions, an "Add field" link, and a live Form Preview
+  rendering disabled inputs straight from `template_fields`) — no separate `show` route, matching
+  the pattern already used for Users. Field create/edit share one Blade partial
+  (`fields/_form.blade.php`). Only new JS: vanilla add/remove for dropdown-option inputs, exactly
+  as scoped — no Alpine/Vite introduced.
+- **Found and fixed live** (manually exercising both sample templates end-to-end before writing
+  automated tests, same discipline as Phase 2): `TemplateController::store()` read
+  `$data['slug']` unconditionally, which is only a valid array key when the request actually
+  included a `slug` field — submitting the create form with slug left blank (the documented,
+  expected way to get an auto-generated slug) fataled with "Undefined array key". Fixed to
+  `$data['slug'] ?? null`.
+- **Manual QA — the Phase 3 acceptance test** (see docs/PROJECT_REQUIREMENTS.md's acceptance
+  test for the project-wide version this is a slice of): built both sample templates end-to-end
+  through the admin UI via real HTTP requests (cookies, CSRF tokens), zero code changes between
+  them —
+  - **Template A — BECITHCON Speaker**: `name` (text, recipient), `role` (dropdown: Keynote
+    Speaker/Invited Speaker/Session Chair), `institution` (text). Activated successfully.
+  - **Template B — Research Paper Certificate**: `author_name` (text, recipient), `paper_title`
+    (long_text), `paper_id` (number), `track` (dropdown). Activated successfully.
+  - Verified live: dropdown options render correctly in both the field table and the Form Preview;
+    reordering (`author_name` moved above `paper_title`) persisted correctly; the Form Preview
+    rendered visibly different forms for the two templates (a `<select>` with BECITHCON's three
+    role options vs. a `<textarea>` for the paper's long_text field) — the concrete proof the
+    dynamic architecture works, not just an assumption from reading the code; activation correctly
+    blocked a zero-field template, then a field-but-no-recipient template, both with the specific
+    listed reason shown in the UI, and succeeded once fixed; setting `is_recipient_name` on a
+    `long_text` field was rejected ("Only a text field may be the recipient name field"); setting
+    a new recipient field automatically un-set the previous one (no error, no manual unset step);
+    a dropdown submitted with zero options was rejected and never persisted a broken field row; a
+    duplicate `field_key` within a template was rejected; `field_key=certificate_number` was
+    rejected as reserved; deleting a field actually removed it; archiving a template flipped its
+    status without touching its fields; a guest and a deactivated admin were both redirected to
+    login on `/admin/templates`; a Certificate Manager (not just a Super Admin) could do all of
+    the above, confirming both roles have equal template access as specified.
+- **Tests** (`tests/Feature/Admin/TemplateManagementTest.php`): the 7 items requested — template
+  creation, field-key uniqueness, dropdown-requires-options, single-recipient-field enforcement,
+  activation gate (both the failure and the subsequent success once fixed, in one test), the Form
+  Preview rendering fields pulled from the database, and guest/deactivated-admin access blocked.
+  Added `App\Models\CertificateTemplate`/`TemplateField` factories (didn't exist before Phase 3
+  needed them for tests). Extended `DatabaseSchemaTest` with the new `is_recipient_name` column.
+  All 23 tests pass (16 from Phase 1/2 + 7 new), 130 assertions, no regressions.
+- **Docs updated**: `docs/CERTIFICATE_SYSTEM.md` (new §Dynamic field architecture section — field
+  types, the system-fields-vs-input-fields distinction, the recipient-name concept, field-key
+  rules, and the full activation-validation rule list; §Template lifecycle rewritten to mark what's
+  built vs. still planned), `docs/DATABASE_DESIGN.md` (`is_recipient_name` column documented,
+  "Not built yet" list updated to distinguish "the flag exists and is enforced" from "certificate
+  generation actually reads it," status line bumped to Phase 3), `docs/ARCHITECTURE.md` (folder
+  layout: new controllers/requests/policy/services/views). PDF upload, template positioning,
+  drag/drop, QR, certificate generation, and Excel are explicitly out of scope for this phase per
+  the brief and were not started.

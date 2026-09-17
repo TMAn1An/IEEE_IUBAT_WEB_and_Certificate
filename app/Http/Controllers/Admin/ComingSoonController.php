@@ -8,15 +8,11 @@ use Illuminate\Contracts\View\View;
 /**
  * Honest placeholder pages for admin nav sections that don't have real
  * functionality yet (see docs/CHANGELOG.md for which phase builds each one).
- * Kept as one controller/view rather than four near-identical ones.
+ * Kept as one controller/view rather than several near-identical ones.
+ * Templates moved to a real Admin\TemplateController in Phase 3.
  */
 class ComingSoonController extends Controller
 {
-    public function templates(): View
-    {
-        return $this->comingSoon('Certificate Templates', 'Phase 4', 'Upload a Canva-exported PDF and define the dynamic fields it needs.');
-    }
-
     public function certificates(): View
     {
         return $this->comingSoon('Certificates', 'Phase 5', 'Generate a single certificate from a template and download it.');

@@ -21,4 +21,14 @@ enum CertificateTemplateStatus: string
             self::Archived => 'Archived',
         };
     }
+
+    /** CSS class for the admin UI's status badge — see public/css/admin.css. */
+    public function badgeClass(): string
+    {
+        return match ($this) {
+            self::Draft => 'badge--draft',
+            self::Active => 'badge--active',
+            self::Archived => 'badge--archived',
+        };
+    }
 }

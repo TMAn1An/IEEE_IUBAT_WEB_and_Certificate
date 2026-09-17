@@ -190,6 +190,12 @@ table.admin-table {
 .badge--active { background: var(--ok-bg); color: var(--ok-text); }
 .badge--inactive { background: var(--danger-bg); color: var(--danger); }
 .badge--role { background: #eef2f6; color: var(--ieee-navy); }
+.badge--draft { background: #fdf3e0; color: #92620a; }
+.badge--archived { background: #eef0f2; color: var(--muted); }
+.badge--recipient { background: #e6f0fb; color: var(--ieee-blue); }
+.badge--required { background: #fbeaea; color: var(--danger); }
+.badge--verification { background: var(--ok-bg); color: var(--ok-text); }
+.badge--type { background: #f1eefc; color: #5a3ea8; }
 
 .btn {
   display: inline-block;
@@ -209,7 +215,7 @@ table.admin-table {
 
 .field { margin-bottom: 16px; }
 .field label { display: block; font-weight: 600; font-size: .88rem; margin-bottom: 6px; }
-.field input, .field select {
+.field input, .field select, .field textarea {
   width: 100%;
   max-width: 380px;
   padding: 9px 11px;
@@ -218,8 +224,34 @@ table.admin-table {
   font-size: .92rem;
   font-family: inherit;
 }
+.field textarea { resize: vertical; }
 .field .help { font-size: .78rem; color: var(--muted); margin-top: 4px; }
 .field .error { font-size: .8rem; color: var(--danger); margin-top: 4px; }
+.field--checkbox label { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+.field--checkbox input { width: auto; }
+
+.options-list { max-width: 420px; }
+.options-list__row { display: flex; gap: 8px; margin-bottom: 8px; }
+.options-list__row input { flex: 1; max-width: none; }
+
+.preview-form .field input,
+.preview-form .field select,
+.preview-form .field textarea {
+  background: var(--shell);
+  color: var(--muted);
+  max-width: 420px;
+}
+.preview-form .field label { font-weight: 600; }
+.preview-form .field .req { color: var(--danger); }
+
+.field-actions { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.field-actions form { display: inline; }
+.field-actions button.link-btn {
+  background: none; border: none; padding: 0; margin: 0;
+  color: var(--muted); cursor: pointer; font-size: 1rem; line-height: 1;
+}
+.field-actions button.link-btn:hover { color: var(--ieee-blue); }
+.field-actions button.link-btn:disabled { opacity: .3; cursor: default; }
 
 .alert { padding: 12px 16px; border-radius: var(--r); font-size: .9rem; margin-bottom: 18px; }
 .alert--ok { background: var(--ok-bg); color: var(--ok-text); }

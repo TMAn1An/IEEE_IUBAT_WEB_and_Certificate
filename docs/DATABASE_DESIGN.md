@@ -3,11 +3,12 @@
 MySQL/MariaDB, via Laravel migrations only — never hand-created in phpMyAdmin except the database
 and database user themselves (`docs/DEPLOYMENT_CPANEL.md`).
 
-**Status**: the schema below is implemented as of Phase 2 (`database/migrations/`). Columns/tables
-marked *(later phase)* are intentionally not built yet — Phase 2 was scoped to "database +
-auth/admin foundation" only, kept lean rather than pre-building columns for features that don't
-exist yet (bulk generation, PDF rendering, verification logging). Add them in the phase that
-actually needs them, and update this doc alongside that migration.
+**Status**: the schema below is implemented as of Phase 3 (`database/migrations/`). Columns/tables
+marked *(later phase)* are intentionally not built yet — each phase stays scoped to what it
+actually needs (Phase 2: database + auth/admin foundation; Phase 3: template/field management),
+kept lean rather than pre-building columns for features that don't exist yet (bulk generation, PDF
+rendering, verification logging). Add them in the phase that actually needs them, and update this
+doc alongside that migration.
 
 ## Entity overview
 
@@ -73,6 +74,7 @@ Indexed: `status`.
 | field_type | string, cast to `App\Enums\TemplateFieldType` (`text`, `long_text`, `number`, `date`, `dropdown`, `certificate_number`, `qr_code`) | |
 | is_required | boolean, default `true` | |
 | show_on_verification | boolean, default `true` | drives what the public `/verify/{codeword}` page displays (Phase 6) |
+| is_recipient_name | boolean, default `false` | added in Phase 3 (`add_is_recipient_name_to_template_fields_table`) — see `docs/CERTIFICATE_SYSTEM.md` §Recipient-name field. At most one `true` row per template, only ever on a `text` field; enforced in `App\Services\Templates\TemplateFieldService`, not a DB constraint (no portable partial-unique-index equivalent across MySQL versions) |
 | verification_label | string, nullable | overrides `label` on the verification page when set |
 | options | JSON, nullable, cast `array` | dropdown choices |
 | position | JSON, nullable, cast `array` | editor placement in PDF points (x/y/width/height) — see `docs/TEMPLATE_EDITOR.md`; not populated until the template editor (Phase 4) exists |
@@ -147,7 +149,7 @@ autocompletion + a `label()` method for display text in one place.
 - `CertificateBatchStatus`: `Pending`, `Processing`, `Completed`, `Partial`, `Failed`
 - `CertificateStatus`: `Active`, `Revoked`, `Reissued`
 
-## Not built yet (deliberately, per Phase 2 scope)
+## Not built yet (deliberately, kept lean phase by phase)
 
 - **`verification_logs`**: privacy-conscious hit/miss log for `/verify/{codeword}` — Phase 6.
 - **`audit_logs`**: admin action log (template created, certificate revoked, etc.) — Phase 9, unless
@@ -155,6 +157,11 @@ autocompletion + a `label()` method for display text in one place.
 - Batch import/export file paths and ZIP handling — Phase 7.
 - Certificate PDF storage path — Phase 5.
 - Template editor coordinate/font data actually being populated in `position`/`style` — Phase 4.
+- `certificates.recipient_name` actually being populated from a template's `is_recipient_name`
+  field at generation time — Phase 5. The `template_fields.is_recipient_name` flag itself, and the
+  "exactly one, text-only" rule around it, are built and enforced as of Phase 3 (see
+  `docs/CERTIFICATE_SYSTEM.md`); only the consuming side (certificate generation reading that flag)
+  is still pending.
 
 ## Design decisions worth recording
 

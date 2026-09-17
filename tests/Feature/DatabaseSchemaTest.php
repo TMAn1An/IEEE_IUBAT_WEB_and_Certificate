@@ -10,7 +10,7 @@ use Tests\TestCase;
  * Phase 2 required test 7: migrations run successfully. RefreshDatabase
  * already re-runs every migration for each test class in this suite (a
  * failure there fails the whole run), so this makes the check explicit
- * rather than only implicit.
+ * rather than only implicit. Extended in Phase 3 with `is_recipient_name`.
  */
 class DatabaseSchemaTest extends TestCase
 {
@@ -28,7 +28,8 @@ class DatabaseSchemaTest extends TestCase
         $this->assertTrue(Schema::hasTable('template_fields'));
         $this->assertTrue(Schema::hasColumns('template_fields', [
             'certificate_template_id', 'label', 'field_key', 'field_type', 'is_required',
-            'show_on_verification', 'verification_label', 'options', 'position', 'style', 'sort_order',
+            'show_on_verification', 'is_recipient_name', 'verification_label', 'options', 'position',
+            'style', 'sort_order',
         ]));
 
         $this->assertTrue(Schema::hasTable('certificate_batches'));

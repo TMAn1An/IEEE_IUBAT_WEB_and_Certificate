@@ -11,6 +11,102 @@ which template it's dealing with. If a new certificate type needs a code change 
 template and its fields," the design has regressed — see `docs/PROJECT_REQUIREMENTS.md`'s
 acceptance test.
 
+## Dynamic field architecture — implemented Phase 3
+
+`template_fields` is the single source of truth for what a certificate template needs. Every
+consumer — the (future) single-certificate form, the (future) Excel header row and import
+validation, the (future) PDF field placement, and the (future) verification page — reads this same
+table and nothing else. Phase 3 built the admin CRUD for this table plus the two services that
+keep it correct; the consumers themselves (form/Excel/PDF/verify) are later phases, but the schema
+and rules they'll rely on are locked in now. `App\Services\Templates\TemplateService` and
+`TemplateFieldService` hold every rule below — controllers stay thin (`$this->authorize()`,
+Form Request, one service call).
+
+**Field types (Phase 3 admin-assignable set)**: `text`, `long_text`, `number`, `date`, `dropdown` —
+`App\Enums\TemplateFieldType::assignable()`. Configuring a field means: label, field key, type,
+required, show-on-verification, dropdown options (JSON array of plain strings, e.g.
+`["Keynote Speaker","Invited Speaker"]`), and sort order. No position/style (PDF coordinates,
+fonts, colors) yet — that's Phase 4's template editor, layered on top of the same rows.
+
+### System fields vs. input fields
+
+`certificate_number` and `qr_code` are the other two `TemplateFieldType` cases, but they are
+**not** admin-assignable input fields and never will be treated as one:
+
+- They are never offered in the "Add field" type dropdown (`TemplateFieldType::assignable()`
+  excludes them) and are rejected server-side if someone tries to force one through anyway
+  (`Store/UpdateTemplateFieldRequest`).
+- The strings `certificate_number` and `qr_code` are **reserved `field_key` values** — an ordinary
+  text field can't use either as its key either, even though its own type would never be one of
+  the system types (`TemplateFieldService::isValidFieldKey()`). This keeps the keys free for Phase
+  4 to use as a lookup convention when placing the actual system-managed certificate-number text
+  and QR image on the PDF.
+- They are not participant-entered data: nobody fills in a "certificate number" on the
+  single-certificate form, and they never become an Excel column. They are **layout elements** —
+  Phase 4 gives them a PDF position (and, for the QR, nothing else — it has no label, no style
+  beyond size) the same way it gives ordinary fields a position, but they stay conceptually
+  separate from the fields loop everywhere else (the form, Excel, the `data` JSON, verification
+  display).
+
+### Recipient-name field
+
+Exactly one field per template identifies which value becomes `certificates.recipient_name` once
+generation exists (Phase 5) — see `docs/DATABASE_DESIGN.md` for why that column is denormalized.
+Modeled as `template_fields.is_recipient_name` (boolean), not a template-level foreign key, so it
+travels with field CRUD/reordering for free.
+
+- Only a `text` field may carry it — rejected in the Form Request (`withValidator()`) if the
+  submitted `field_type` isn't `text`, regardless of what `is_recipient_name` says.
+- At most one per template — enforced by `TemplateFieldService::clearExistingRecipientField()`,
+  called inside the same DB transaction as the create/update that sets a new one. Setting the flag
+  on a field automatically clears it from whichever field held it before; this is automatic
+  exclusivity, not a validation error asking the admin to unset the old one manually first.
+- A draft template may temporarily have zero recipient fields while being built — only
+  **activation** requires exactly one (see below), not every intermediate save.
+
+### Field-key rules
+
+`field_key` is the stable internal identifier a field's value lives under in a certificate's future
+`data` JSON — never the display `label`, which can change freely without touching stored data or
+breaking Excel imports already in flight.
+
+- Format: `^[a-z][a-z0-9_]*$` — lowercase, starts with a letter, letters/digits/underscore only.
+  Validated both in the Form Request (`regex:`) and centrally in
+  `TemplateFieldService::isValidFieldKey()` (also checked again by `TemplateService`'s activation
+  gate, for defense-in-depth against any future write path that bypasses the Form Request).
+- Reserved: `certificate_number`, `qr_code` (see §System fields above) — rejected even though
+  they'd otherwise pass the regex.
+- Unique per template — a real DB unique constraint (`unique(certificate_template_id, field_key)`),
+  backed by a matching Form Request `Rule::unique(...)` for a clean error message instead of a raw
+  DB exception.
+- **Editable in Phase 3.** No certificate has ever been generated against a template yet (that
+  functionality doesn't exist until Phase 5), so there is nothing whose stored `data` JSON could
+  go stale if a key changes. `TemplateFieldService::update()` and `delete()` both carry a comment
+  at the exact spot a future guard belongs — e.g.
+  `if ($field->template->certificates()->exists()) { /* block key change / block delete */ }` —
+  so Phase 5 tightens this by adding a check, not by redesigning the method.
+
+### Activation validation (draft → active)
+
+`TemplateService::activationErrors()` (called by `activate()`, which throws when the list isn't
+empty) checks, in order:
+
+1. The template has at least one field.
+2. Exactly one field has `is_recipient_name = true`.
+3. No two fields share a `field_key` (defense-in-depth; the DB constraint already makes this
+   unreachable in practice).
+4. Every field's key passes `TemplateFieldService::isValidFieldKey()` (same reasoning).
+5. Every `dropdown` field has at least one non-blank option.
+
+Deliberately does **not** check for an uploaded PDF or any field having a PDF position — that's a
+separate "generation ready" concept Phase 4 layers on top, not merged into this gate. A template
+can be `active` with no PDF at all in Phase 3/4; Phase 5's single-certificate generation is the
+first place that would need to additionally check for PDF/placement readiness before actually
+producing a PDF. Archiving has no validation (an admin can always take a template out of
+circulation); there's no "un-archive" action, but `activate()` works from any starting status, so
+archiving is not one-way in practice — flip it back to `active` any time it passes validation
+again.
+
 ## PDF pipeline — open question to resolve early in Phase 4
 
 Plan: **FPDI** imports the admin-uploaded Canva PDF's first page as a background; **TCPDF** (the
@@ -43,17 +139,33 @@ PDF before upload) rather than silently working around it.
 
 ## Template lifecycle
 
-1. Super Admin uploads a PDF (`StoreCertificateTemplateRequest`): validated by real content
-   inspection (not just extension/MIME header — see `docs/SECURITY.md`), reasonable max size.
-2. On upload, the page's width/height in points is read (FPDI/TCPDF can report this from the
-   imported page) and stored on `certificate_templates` — this is what makes the coordinate
-   conversion in `docs/TEMPLATE_EDITOR.md` possible without guessing.
-3. Admin adds `template_fields` rows via the visual editor: type, label, key, required, style,
-   position, `show_on_verification`.
-4. Template starts `draft`; admin flips it to `active` when ready for generation. Only `active`
-   templates are selectable in the single/bulk generation UI.
-5. Editing an active template's fields is allowed but does not retroactively change already-issued
-   certificates (their `data` JSON and rendered PDFs are frozen at issue time).
+1. **(Phase 4, not yet built)** Super Admin uploads a PDF: validated by real content inspection
+   (not just extension/MIME header — see `docs/SECURITY.md`), reasonable max size. On upload, the
+   page's width/height in points is read and stored on `certificate_templates` — this is what
+   makes the coordinate conversion in `docs/TEMPLATE_EDITOR.md` possible without guessing.
+2. **(Phase 3 — built)** Either role (Super Admin or Certificate Manager — see
+   `docs/PROJECT_REQUIREMENTS.md` §Roles) creates a template record (name, slug, description) via
+   `Admin\TemplateController`, then adds `template_fields` rows one at a time via a plain form
+   (`Admin\TemplateFieldController`): label, key, type, required, show-on-verification, recipient
+   flag, dropdown options. No position/style yet (Phase 4). Field order is controlled by
+   Move Up/Move Down (`TemplateFieldService::moveUp()`/`moveDown()`, a simple sort_order swap with
+   the adjacent row) — full drag/drop placement is a separate, later concern (Phase 4's PDF
+   canvas), not this list order.
+3. A "Form Preview" on the template's management page renders what the future single-certificate
+   form will look like — disabled inputs generated straight from the current `template_fields`
+   rows, nothing persisted. This is the concrete proof that two differently-shaped templates
+   produce two different forms through the same code path with no per-template branching — see
+   the Phase 3 acceptance test in `docs/PROJECT_REQUIREMENTS.md`.
+4. Template starts `draft`; an admin activates it once it passes §Activation validation below.
+   Only `active` templates are meant to be selectable in the (future) single/bulk generation UI —
+   that selection restriction itself is Phase 5 work, since generation doesn't exist yet.
+5. Editing an active template's fields is currently allowed (no status-based lock on field
+   mutations in Phase 3, since no certificate can reference a field yet either way). Once
+   generation exists (Phase 5) and certificates can reference a template's fields, revisit whether
+   editing an active template's fields needs a stronger guard than the field-key/delete comments
+   already left in `TemplateFieldService` — but editing must never retroactively change
+   already-issued certificates regardless (their `data` JSON and rendered PDFs stay frozen at
+   issue time no matter what the template looks like afterward).
 
 ## Single certificate generation
 
@@ -187,3 +299,8 @@ MySQL is the only source of truth at all times. Excel files are:
 
 - _(Phase 0)_ Documented the pipeline and flagged the FPDI PDF-version risk as unresolved —
   needs a real Canva-exported sample PDF tested before Phase 4 begins.
+- _(Phase 3)_ Built template + dynamic-field CRUD, the recipient-name concept, field-key rules,
+  the system-fields-vs-input-fields distinction, activation validation, and the form preview — see
+  §Dynamic field architecture above. PDF/QR/Excel/generation sections above remain accurate
+  descriptions of *planned* behavior for their respective later phases; nothing in this phase
+  touched them.
