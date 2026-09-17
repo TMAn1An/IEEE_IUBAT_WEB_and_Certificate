@@ -1,0 +1,268 @@
+/* Minimal, no-build-step admin stylesheet. Reuses the public site's IEEE
+   brand colors (see assets/css/style.css) for visual consistency without
+   pulling the admin panel into the same stylesheet or a build pipeline. */
+
+:root {
+  --ieee-blue: #00629B;
+  --ieee-navy: #002855;
+  --ieee-green: #00843D;
+  --ink: #1a1a1a;
+  --text: #333333;
+  --muted: #6b7280;
+  --line: #dbe1e6;
+  --shell: #f4f6f8;
+  --danger: #b3261e;
+  --danger-bg: #fbeaea;
+  --ok-bg: #e9f6ee;
+  --ok-text: #1a6b3c;
+  --r: 8px;
+  --font: "Segoe UI", "Open Sans", Tahoma, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--shell);
+}
+
+a { color: var(--ieee-blue); }
+
+.admin-shell {
+  min-height: 100vh;
+  display: flex;
+}
+
+.admin-sidebar {
+  width: 230px;
+  flex-shrink: 0;
+  background: var(--ieee-navy);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-sidebar__brand {
+  padding: 20px 18px;
+  font-weight: 700;
+  font-size: 1.05rem;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  line-height: 1.3;
+}
+
+.admin-sidebar__brand small {
+  display: block;
+  font-weight: 400;
+  font-size: .75rem;
+  opacity: .7;
+}
+
+.admin-nav {
+  list-style: none;
+  margin: 0;
+  padding: 12px 0;
+  flex: 1;
+}
+
+.admin-nav a {
+  display: block;
+  padding: 10px 18px;
+  color: rgba(255,255,255,.85);
+  text-decoration: none;
+  font-size: .92rem;
+  border-left: 3px solid transparent;
+}
+
+.admin-nav a:hover {
+  background: rgba(255,255,255,.06);
+}
+
+.admin-nav a.is-active {
+  background: rgba(255,255,255,.1);
+  border-left-color: var(--ieee-green);
+  color: #fff;
+  font-weight: 600;
+}
+
+.admin-sidebar__foot {
+  padding: 14px 18px;
+  border-top: 1px solid rgba(255,255,255,.12);
+  font-size: .82rem;
+}
+
+.admin-sidebar__foot form button {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,.75);
+  cursor: pointer;
+  padding: 0;
+  font-size: .82rem;
+  text-decoration: underline;
+}
+
+.admin-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-topbar {
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.admin-topbar h1 {
+  font-size: 1.15rem;
+  margin: 0;
+}
+
+.admin-content {
+  padding: 28px;
+  max-width: 1100px;
+}
+
+.admin-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 22px;
+  margin-bottom: 20px;
+}
+
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.admin-stat {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 18px;
+}
+
+.admin-stat__n {
+  font-size: 1.9rem;
+  font-weight: 700;
+  color: var(--ieee-navy);
+}
+
+.admin-stat__l {
+  font-size: .85rem;
+  color: var(--muted);
+}
+
+table.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92rem;
+}
+
+.admin-table th, .admin-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: .76rem;
+  font-weight: 600;
+}
+
+.badge--active { background: var(--ok-bg); color: var(--ok-text); }
+.badge--inactive { background: var(--danger-bg); color: var(--danger); }
+.badge--role { background: #eef2f6; color: var(--ieee-navy); }
+
+.btn {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: var(--r);
+  font-size: .9rem;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.btn--primary { background: var(--ieee-blue); color: #fff; }
+.btn--ghost { background: #fff; border-color: var(--line); color: var(--text); }
+.btn--danger { background: #fff; border-color: var(--danger); color: var(--danger); }
+.btn--sm { padding: 5px 11px; font-size: .82rem; }
+
+.field { margin-bottom: 16px; }
+.field label { display: block; font-weight: 600; font-size: .88rem; margin-bottom: 6px; }
+.field input, .field select {
+  width: 100%;
+  max-width: 380px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: .92rem;
+  font-family: inherit;
+}
+.field .help { font-size: .78rem; color: var(--muted); margin-top: 4px; }
+.field .error { font-size: .8rem; color: var(--danger); margin-top: 4px; }
+
+.alert { padding: 12px 16px; border-radius: var(--r); font-size: .9rem; margin-bottom: 18px; }
+.alert--ok { background: var(--ok-bg); color: var(--ok-text); }
+.alert--error { background: var(--danger-bg); color: var(--danger); }
+
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ieee-navy);
+}
+
+.login-card {
+  background: #fff;
+  border-radius: var(--r);
+  padding: 36px 32px;
+  width: 100%;
+  max-width: 360px;
+}
+
+.login-card h1 {
+  font-size: 1.2rem;
+  margin: 0 0 4px;
+}
+
+.login-card p.sub {
+  color: var(--muted);
+  font-size: .85rem;
+  margin: 0 0 24px;
+}
+
+.coming-soon {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .admin-shell { flex-direction: column; }
+  .admin-sidebar { width: 100%; }
+  .admin-nav { display: flex; overflow-x: auto; padding: 6px; }
+  .admin-nav a { border-left: none; border-bottom: 3px solid transparent; white-space: nowrap; }
+  .admin-nav a.is-active { border-left-color: transparent; border-bottom-color: var(--ieee-green); }
+  .admin-content { padding: 18px; }
+}

@@ -76,3 +76,70 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   in `docs/MIGRATION_PLAN.md`. Not a functional break and not an indexed URL.
 - Certificate system, admin, and auth are explicitly out of scope for this phase per the user's
   instruction — Phase 2 starts from here.
+
+## Phase 2 — Database + authentication/admin foundation (2026-09-17)
+
+- **Database**: 5 migrations — `add_role_and_status_to_users_table` (adds `role`, `is_active` to
+  Laravel's default `users` table, as a separate migration rather than editing the historical one),
+  plus new tables `certificate_templates`, `template_fields`, `certificate_batches`, `certificates`.
+  Kept deliberately lean per the brief — no `verification_logs`/`audit_logs` yet, no Excel/ZIP/PDF
+  path columns until the phases that populate them exist. Verified rollback-safe
+  (`migrate:rollback --step=5` then `migrate` cleanly). Full column-by-column detail in
+  `docs/DATABASE_DESIGN.md`.
+- **Enums** (`App\Enums\*`): `UserRole`, `CertificateTemplateStatus`, `TemplateFieldType`,
+  `CertificateBatchStatus`, `CertificateStatus` — plain `string` DB columns, cast to PHP backed
+  enums at the model layer (Laravel's current recommended approach over native `ENUM` columns).
+- **Models**: `User` (updated with `role`/`is_active` casts and `createdTemplates()` /
+  `createdBatches()` / `createdCertificates()` relationships), `CertificateTemplate`,
+  `TemplateField`, `CertificateBatch`, `Certificate` — all relationships from the brief
+  (`fields()`, `certificates()`, `batches()`, `creator()`, `template()`, `batch()`,
+  `reissuedFrom()`/`reissuedTo()`) with `array` casts on every JSON column (`data`, `options`,
+  `position`, `style`).
+- **Authentication**: hand-rolled `Admin\AuthController` (`Auth::attempt()` + session guard) — no
+  Breeze/Fortify/Jetstream, matching the brief's "avoid unnecessarily heavy packages." Login
+  throttling via `RateLimiter` (5 attempts/60s, keyed on email+IP). No public registration route
+  exists. `EnsureUserIsActive` middleware (alias `active`) blocks a deactivated account on its very
+  next request, not just at the next login attempt.
+- **Authorization**: `App\Policies\UserPolicy` (Laravel auto-discovery, no manual registration
+  needed) gates all user-management actions to Super Admin, checked server-side via
+  `$this->authorize()` in `Admin\UserController` — confirmed live (not just by reading the code)
+  that a Certificate Manager gets a real 403 on `/admin/users*`, not a hidden nav link. The admin
+  sidebar additionally hides the Users link for non-Super-Admins as a UX nicety on top of that.
+- **Last-active-Super-Admin protection**: `UserController::isLastActiveSuperAdmin()` blocks both
+  deactivating that account and changing its role away from `super_admin`, checked before either
+  action commits. There's no user-deletion feature in Version 1 (deactivate only), so the
+  "accidentally delete the last admin" failure mode doesn't exist to begin with.
+- **Admin UI**: a plain-CSS (`public/css/admin.css`, no build step — no JS interactivity needed yet)
+  layout with a sidebar (Dashboard, Templates, Certificates, Bulk Generation, Batches, Users — the
+  last one hidden for non-Super-Admins). Dashboard shows live counts from the new tables (all zero
+  until later phases populate them). Templates/Certificates/Bulk Generation/Batches are honest
+  "not built yet, planned for Phase N" pages (`Admin\ComingSoonController`, one controller/view for
+  all four) rather than dead links or fake functionality. Users has real CRUD: list, create,
+  edit (name/email/role/password), activate/deactivate — no delete.
+- **`php artisan app:make-admin`**: interactive console command (name/email/role prompted, password
+  via `$this->secret()` so it's never in shell history) for creating the first production Super
+  Admin without a password ever touching source control, a seeder, or a committed file — the
+  command `docs/DEPLOYMENT_CPANEL.md` already referenced now actually exists.
+- **Dev seeding**: `AdminUserSeeder` creates two local-only accounts (a Super Admin and a
+  Certificate Manager) from `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD`/`SEED_MANAGER_EMAIL`/
+  `SEED_MANAGER_PASSWORD` env vars, falling back to clearly-fake `*.test` defaults — and refuses to
+  run outside `local`/`testing` environments, so it can never seed a known password into a real one.
+- **Found and fixed while verifying live** (not just from reading the code): the base
+  `App\Http\Controllers\Controller` in Laravel 12's slim skeleton no longer includes
+  `AuthorizesRequests`, so `$this->authorize()` was a fatal error until the trait was added back —
+  caught by manually exercising `/admin/users` as both roles, not by the test suite (written after).
+- **Tests** (`tests/Feature/Admin/AuthTest.php`, `UserManagementTest.php`,
+  `Feature/DatabaseSchemaTest.php`): the 7 items requested — guest blocked, active admin logs in,
+  inactive admin blocked (both at login and mid-session), Certificate Manager blocked from user
+  management, Super Admin allowed, last-active-Super-Admin protected (both deactivation and role
+  change), migrations verified via an explicit schema-columns check. Kept to exactly this list, no
+  broader CRUD suite. All 16 tests pass (12 new + the 4 from Phase 1, re-run to confirm no
+  regression) — `php artisan test`, 106 assertions.
+- **Docs updated**: `docs/DATABASE_DESIGN.md` (rewritten to match the actual implemented schema,
+  with a "not built yet" section for what later phases add), `docs/ARCHITECTURE.md` (folder layout,
+  the Vite-vs-plain-CSS decision for Phase 2's admin UI, the no-auth-package decision, corrected the
+  testing-framework row from the originally planned Pest to the PHPUnit actually in use),
+  `docs/SECURITY.md` (§Authentication & authorization rewritten to describe what's implemented and
+  verified, rate-limit numbers now decided). `CLAUDE.md` needed no changes — its rules already
+  anticipated this implementation. Certificate template/generation/QR/Excel functionality
+  intentionally not started beyond the database/model foundation, per the brief.

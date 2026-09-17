@@ -3,24 +3,41 @@
 A working checklist, not a one-time audit — revisit this before Phase 9 sign-off and whenever a
 new user-facing surface is added.
 
-## Authentication & authorization
+## Authentication & authorization — implemented Phase 2
 
-- No public registration route exists anywhere in the app. Admin accounts are created by an
-  existing Super Admin via the admin Users screen, or seeded once via `php artisan app:make-admin`
-  for the very first account (documented in `docs/DEPLOYMENT_CPANEL.md`).
-- Passwords hashed via Laravel's default hasher (bcrypt/argon2, never rolled by hand).
-- Session-based auth (Laravel's default guard), not token auth — this is a server-rendered Blade
-  admin, not an SPA/API client.
-- Login throttling via Laravel's built-in rate limiter (e.g. lock out after N failed attempts per
-  email+IP combination for a cooldown window) — configured, not left at framework defaults without
-  checking they're actually adequate.
-- Two roles enforced server-side: `EnsureAdminRole` middleware plus Policies
-  (`CertificateTemplatePolicy`, `CertificatePolicy`, `UserPolicy`) gate every admin action.
-  Super-Admin-only actions (user management, settings, revoke/reissue) check the policy, not just
-  route grouping — a Certificate Manager hitting a Super-Admin route directly must get a 403, not
-  a hidden button that happens not to be rendered.
-- Optional password reset may be added later if it doesn't add meaningful complexity; not required
-  for launch.
+- No public registration route exists anywhere in the app (verified: `routes/admin.php` defines
+  only `login`/`login.attempt`/`logout`). Admin accounts are created by an existing Super Admin via
+  the admin Users screen (`Admin\UserController`), or the first one via `php artisan app:make-admin`
+  (interactive password prompt, never a committed value — see `docs/DEPLOYMENT_CPANEL.md`).
+- Passwords hashed via Laravel's default hasher (bcrypt, via the model's `'password' => 'hashed'`
+  cast — never rolled by hand, never logged, never returned in a response: `User::$hidden` includes
+  `password`, and `UserManagementTest::test_admin_user_passwords_are_never_exposed_in_responses`
+  guards this).
+- Session-based auth (Laravel's default `web` guard, `database` session driver — no Redis), not
+  token auth — this is a server-rendered Blade admin, not an SPA/API client.
+- Login throttling: `Admin\AuthController::login()` uses `RateLimiter` keyed on
+  `strtolower(email).'|'.ip()`, 5 attempts per 60-second lockout, cleared on success. Deliberately
+  not Laravel's `ThrottlesLogins` trait (that's part of the UI scaffolding packages this project
+  isn't using) — same underlying `RateLimiter` facade, just called directly.
+- Two roles enforced server-side, not by hiding a nav link: `App\Policies\UserPolicy`
+  (auto-discovered for the `User` model) gates every user-management action, checked explicitly via
+  `$this->authorize(...)` in `Admin\UserController` — a Certificate Manager hitting
+  `/admin/users*` directly gets a 403 (covered by
+  `UserManagementTest::test_certificate_manager_cannot_access_user_management`). The admin layout's
+  sidebar also hides the Users link for non-Super-Admins (`@can('viewAny', User::class)`), but that
+  is UX politeness on top of the server-side check, not the actual boundary.
+- `App\Http\Middleware\EnsureUserIsActive` (alias `active`, applied to every authenticated admin
+  route in `routes/admin.php`) logs a deactivated account out and redirects to login on their very
+  next request — deactivation takes effect immediately, not just on the next login attempt.
+  `Admin\AuthController::login()` separately blocks a fresh login attempt for an inactive account
+  too, so both paths (existing session, new login) are covered.
+- The last active Super Admin can't be deactivated or have their role changed away from
+  `super_admin` (`Admin\UserController::isLastActiveSuperAdmin()`, checked before both the
+  toggle-active and update actions) — prevents the admin panel from ever locking everyone out.
+  Deleting a user isn't a feature at all in Version 1 (deactivate only), which sidesteps the
+  "accidentally delete the last admin" failure mode entirely.
+- Password reset stays out of scope for Version 1 (per the Phase 2 brief) — an inactive/locked-out
+  admin is unblocked by another Super Admin via the Users screen instead.
 
 ## CSRF / XSS / injection
 
@@ -109,6 +126,8 @@ new user-facing surface is added.
 
 ## Outstanding items to confirm during implementation
 
-- Exact rate-limit numbers for login and `/verify/{codeword}` (Phase 9).
+- Login rate limit: **decided in Phase 2** — 5 attempts / 60-second lockout, keyed on email+IP (see
+  §Authentication above). `/verify/{codeword}`'s rate limit is still open (Phase 6, doesn't exist
+  yet).
 - Whether `SESSION_SECURE_COOKIE`/HTTPS is enforced from day one on staging or only once the
   production domain's SSL is confirmed (per `docs/DEPLOYMENT_CPANEL.md`).
