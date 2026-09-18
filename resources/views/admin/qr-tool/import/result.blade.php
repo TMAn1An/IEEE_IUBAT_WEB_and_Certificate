@@ -1,6 +1,7 @@
-<x-layouts.admin title="Import Complete — {{ $category->name }}">
+<x-layouts.admin title="Import Complete">
   <div class="admin-card">
     <h2 style="margin-top:0">Import complete</h2>
+    <p style="color:var(--muted);margin-top:-8px">Group: {{ $group->event_type }} / {{ $group->event_name }} / {{ $group->role }}</p>
 
     <table class="admin-table">
       <tbody>
@@ -22,8 +23,8 @@
     @endif
 
     <div style="display:flex;gap:10px;margin-top:20px">
-      <a href="{{ route('admin.qr.records.index') }}" class="btn btn--primary">View all records</a>
-      <a href="{{ route('admin.qr.import.choose-category') }}" class="btn btn--ghost">Import another file</a>
+      <a href="{{ route('admin.qr.groups.show', $group) }}" class="btn btn--primary">View this group</a>
+      <a href="{{ route('admin.qr.import.choose-group') }}" class="btn btn--ghost">Import another file</a>
     </div>
   </div>
 </x-layouts.admin>

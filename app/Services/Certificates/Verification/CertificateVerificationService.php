@@ -53,6 +53,7 @@ class CertificateVerificationService
 
         return VerificationResult::verifiedSimple(
             recipientName: $certificate->recipient_name,
+            eventType: $certificate->group?->event_type,
             eventName: $certificate->event_name,
             issuedAt: $certificate->created_at?->format('j F Y') ?? '',
             publicFields: $this->simplePublicFields($certificate),

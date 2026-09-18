@@ -21,7 +21,8 @@
       <li class="admin-nav__heading">Certificate QR Tool</li>
       <li><a href="{{ route('admin.qr.generate.show') }}" class="{{ request()->routeIs('admin.qr.generate.*') ? 'is-active' : '' }}">Generate QR</a></li>
       <li><a href="{{ route('admin.qr.records.index') }}" class="{{ request()->routeIs('admin.qr.records.*') ? 'is-active' : '' }}">Records</a></li>
-      <li><a href="{{ route('admin.qr.import.choose-category') }}" class="{{ request()->routeIs('admin.qr.import.*') ? 'is-active' : '' }}">Import Excel</a></li>
+      <li><a href="{{ route('admin.qr.groups.index') }}" class="{{ request()->routeIs('admin.qr.groups.*') ? 'is-active' : '' }}">Groups</a></li>
+      <li><a href="{{ route('admin.qr.import.choose-group') }}" class="{{ request()->routeIs('admin.qr.import.*') ? 'is-active' : '' }}">Import Excel</a></li>
       <li><a href="{{ route('admin.qr.categories.index') }}" class="{{ request()->routeIs('admin.qr.categories.*') ? 'is-active' : '' }}">QR Categories</a></li>
       <li class="admin-nav__heading">Advanced / Future</li>
       <li><a href="{{ route('admin.templates.index') }}" class="{{ request()->routeIs('admin.templates.*') ? 'is-active' : '' }}">Certificate Templates</a></li>

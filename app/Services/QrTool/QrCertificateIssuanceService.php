@@ -5,6 +5,7 @@ namespace App\Services\QrTool;
 use App\Enums\QrCertificateStatus;
 use App\Models\QrCategory;
 use App\Models\QrCertificate;
+use App\Models\QrGroup;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -25,15 +26,15 @@ class QrCertificateIssuanceService
     public function __construct(private readonly QrToolCodewordService $codewords) {}
 
     /**
+     * @param  QrGroup  $group  The auto-resolved Event Type + Event Name +
+     *                          Role group this record belongs to (see
+     *                          QrGroupService::resolve()) — group-supplied
+     *                          `event_name`/`role` are authoritative on the
+     *                          created row; the category only supplies the
+     *                          field *schema*.
      * @param  array<string, string>  $fieldValues  key => validated value, already confirmed to belong to $category.
-     * @param  string|null  $eventName  The conference/event name resolved from the live form
-     *                                  selection (per docs/CERTIFICATE_SYSTEM.md §Simple QR tool:
-     *                                  old-tool-parity rebuild — the old tool's conference name is
-     *                                  chosen per submission, not fixed per category). Falls back
-     *                                  to the category's own `event_name` when not given, so other
-     *                                  callers (e.g. Excel import) keep working unchanged.
      */
-    public function issue(QrCategory $category, array $fieldValues, User $issuedBy, ?string $eventName = null): QrCertificate
+    public function issue(QrCategory $category, QrGroup $group, array $fieldValues, User $issuedBy): QrCertificate
     {
         if (! $category->is_active) {
             throw ValidationException::withMessages([
@@ -52,23 +53,25 @@ class QrCertificateIssuanceService
             ]);
         }
         $recipientName = (string) ($fieldValues[$recipientField->key] ?? '');
-        $eventName = $eventName !== null && $eventName !== '' ? $eventName : $category->event_name;
 
-        $existing = $this->findDuplicate($category, $fieldValues);
+        $existing = $this->findDuplicate($group, $fieldValues);
         if ($existing !== null) {
-            // Matches the old tool's `record_exists()` exactly: reuse the
+            // Matches the old tool's `record_exists()` in spirit: reuse the
             // existing record/codeword rather than create a second row --
-            // see docs/CERTIFICATE_SYSTEM.md §Duplicate handling.
+            // see docs/CERTIFICATE_SYSTEM.md §Duplicate handling. Scoped to
+            // the group (Name + Session) rather than the whole category,
+            // since Role is now redundant once a group is fixed.
             return $existing;
         }
 
-        return DB::transaction(function () use ($category, $fieldValues, $recipientName, $eventName, $issuedBy) {
+        return DB::transaction(function () use ($category, $group, $fieldValues, $recipientName, $issuedBy) {
             $codeword = $this->generateUniqueCodeword();
 
             return QrCertificate::create([
                 'qr_category_id' => $category->id,
+                'qr_group_id' => $group->id,
                 'recipient_name' => $recipientName,
-                'event_name' => $eventName,
+                'event_name' => $group->event_name,
                 'data' => $fieldValues,
                 'codeword' => $codeword,
                 'status' => QrCertificateStatus::Active,
@@ -78,25 +81,25 @@ class QrCertificateIssuanceService
     }
 
     /**
-     * Reproduces the old tool's `record_exists()`: an exact,
-     * case-insensitive/trimmed match on every submitted field value
-     * (which for the seeded BECITHCON category is exactly name+role+
-     * session, the old tool's own fixed fields) within the same category.
-     * Not scoped to `event_name`/conference — the old tool's check didn't
-     * consider conference either (see docs/CERTIFICATE_SYSTEM.md
-     * §Duplicate handling for the full reasoning).
+     * Within the SAME group, compares Name + Session only -- Role is
+     * excluded from the comparison because it's already guaranteed
+     * identical for every record in a group (see docs/CERTIFICATE_SYSTEM.md
+     * §Duplicate handling). A different role for the same person resolves
+     * to a different group entirely and is therefore never seen here.
      */
-    private function findDuplicate(QrCategory $category, array $fieldValues): ?QrCertificate
+    private function findDuplicate(QrGroup $group, array $fieldValues): ?QrCertificate
     {
         $normalized = collect($fieldValues)
+            ->except(['role'])
             ->map(fn ($value) => trim((string) $value))
             ->sortKeys();
 
         return QrCertificate::query()
-            ->where('qr_category_id', $category->id)
+            ->where('qr_group_id', $group->id)
             ->get()
             ->first(function (QrCertificate $candidate) use ($normalized) {
                 $candidateData = collect($candidate->data ?? [])
+                    ->except(['role'])
                     ->map(fn ($value) => trim((string) $value))
                     ->sortKeys();
 

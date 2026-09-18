@@ -6,10 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\UploadQrImportRequest;
 use App\Models\QrCategory;
 use App\Models\QrCertificate;
+use App\Models\QrGroup;
 use App\Services\Certificates\Import\ExcelFileReader;
 use App\Services\QrTool\Import\QrCategoryImportService;
 use App\Services\QrTool\Import\QrCategoryImportValidator;
 use App\Services\QrTool\Import\QrImportMappingTarget;
+use App\Services\QrTool\QrCategoryService;
+use App\Services\QrTool\QrGroupService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -27,6 +30,13 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * IEEEQRCODEGENERATOR-main/app.py). No CertificateTemplate dependency
  * anywhere in this class. See docs/CERTIFICATE_SYSTEM.md §Simple QR tool.
  *
+ * Every import happens INTO a destination QrGroup, chosen up front (this
+ * class is the ONE importer implementation — a per-group "Import Excel"
+ * button skips straight to showUpload(), and the general "Import Excel"
+ * nav entry starts at chooseGroup() and lands on the exact same upload/
+ * mapping/preview/confirm flow). See docs/CERTIFICATE_SYSTEM.md §Simple QR
+ * tool: group-based import.
+ *
  * Reuses `ExcelFileReader` from the advanced system's Import namespace --
  * that one class is genuinely generic (headers/rows extraction only, no
  * schema assumptions), unlike everything else in this controller.
@@ -37,27 +47,55 @@ class QrImportController extends Controller
         private readonly ExcelFileReader $reader,
         private readonly QrCategoryImportValidator $validator,
         private readonly QrCategoryImportService $importer,
+        private readonly QrCategoryService $categories,
+        private readonly QrGroupService $groups,
     ) {}
 
-    public function chooseCategory(): View
+    public function chooseGroup(): View
     {
         $this->authorize('create', QrCertificate::class);
 
-        $categories = QrCategory::query()->orderBy('name')->get();
+        $groups = QrGroup::query()
+            ->withCount('certificates')
+            ->orderBy('event_type')
+            ->orderBy('event_name')
+            ->orderBy('role')
+            ->get();
 
-        return view('admin.qr-tool.import.choose-category', ['categories' => $categories]);
+        return view('admin.qr-tool.import.choose-group', ['groups' => $groups]);
     }
 
-    public function showUpload(QrCategory $category): View
+    /**
+     * Optional convenience (never automatic/guessed): explicitly create or
+     * reuse a group from typed-in Event Type/Event Name/Role, then jump
+     * straight into the upload step for it.
+     */
+    public function createGroupAndRedirect(Request $request): RedirectResponse
     {
         $this->authorize('create', QrCertificate::class);
-        $this->authorize('view', $category);
 
-        return view('admin.qr-tool.import.upload', ['category' => $category]);
+        $data = $request->validate([
+            'event_type' => ['nullable', 'string', 'max:255'],
+            'event_name' => ['nullable', 'string', 'max:255'],
+            'role' => ['required', 'string', 'max:255'],
+        ]);
+
+        $group = $this->groups->resolve($data['event_type'] ?? null, $data['event_name'] ?? null, $data['role']);
+
+        return redirect()->route('admin.qr.import.upload', $group);
     }
 
-    public function handleUpload(UploadQrImportRequest $request, QrCategory $category): View|RedirectResponse
+    public function showUpload(QrGroup $group): View
     {
+        $this->authorize('create', QrCertificate::class);
+
+        return view('admin.qr-tool.import.upload', ['group' => $group]);
+    }
+
+    public function handleUpload(UploadQrImportRequest $request, QrGroup $group): View|RedirectResponse
+    {
+        $category = $this->requirePrimaryCategory();
+
         $storedFile = (string) Str::uuid();
         $path = "imports/{$storedFile}.xlsx";
         Storage::disk('local')->put($path, file_get_contents($request->file('file')->getRealPath()));
@@ -71,6 +109,7 @@ class QrImportController extends Controller
         }
 
         return view('admin.qr-tool.import.mapping', [
+            'group' => $group,
             'category' => $category,
             'headers' => $data['headers'],
             'sampleRow' => $data['rows'][0] ?? [],
@@ -89,7 +128,7 @@ class QrImportController extends Controller
      */
     private function guessMapping(array $headers, QrCategory $category): array
     {
-        $fieldsByLabel = $category->fields->keyBy(fn ($f) => strtolower(trim($f->label)));
+        $fieldsByLabel = $category->fields->where('key', '!=', 'role')->keyBy(fn ($f) => strtolower(trim($f->label)));
         $recipientField = $category->fields->firstWhere('is_recipient_name', true);
 
         $mapping = [];
@@ -105,7 +144,9 @@ class QrImportController extends Controller
             } elseif ($normalized === 'codeword') {
                 $mapping[$index] = QrImportMappingTarget::CODEWORD;
             } elseif ($normalized === 'conference') {
-                $mapping[$index] = QrImportMappingTarget::EVENT_NAME;
+                $mapping[$index] = QrImportMappingTarget::CONFERENCE_VALIDATE;
+            } elseif ($normalized === 'role') {
+                $mapping[$index] = QrImportMappingTarget::ROLE_VALIDATE;
             } elseif ($normalized === 'created at') {
                 $mapping[$index] = QrImportMappingTarget::CREATED_AT;
             } elseif ($fieldsByLabel->has($normalized)) {
@@ -116,10 +157,10 @@ class QrImportController extends Controller
         return $mapping;
     }
 
-    public function preview(Request $request, QrCategory $category): View
+    public function preview(Request $request, QrGroup $group): View
     {
         $this->authorize('create', QrCertificate::class);
-        $this->authorize('view', $category);
+        $category = $this->requirePrimaryCategory();
 
         [$path, $storedFile] = $this->resolveStoredFile($request);
         $mapping = $this->sanitizeMapping($request->input('mapping', []));
@@ -128,6 +169,7 @@ class QrImportController extends Controller
         $mappingErrors = $this->validator->validateMapping($category, $mapping);
         if ($mappingErrors !== []) {
             return view('admin.qr-tool.import.mapping', [
+                'group' => $group,
                 'category' => $category,
                 'headers' => $data['headers'],
                 'sampleRow' => $data['rows'][0] ?? [],
@@ -137,33 +179,38 @@ class QrImportController extends Controller
             ]);
         }
 
-        $rows = $this->validator->validateRows($category, $data['rows'], $mapping);
+        $rows = $this->validator->validateRows($category, $group, $data['rows'], $mapping);
         $validRows = array_filter($rows, fn ($r) => $r->isValid());
-        $invalidRows = array_filter($rows, fn ($r) => ! $r->isValid());
+        $duplicateRows = array_filter($rows, fn ($r) => in_array(QrCategoryImportValidator::DUPLICATE_ERROR, $r->errors, true));
+        $otherInvalidRows = array_filter($rows, fn ($r) => ! $r->isValid() && ! in_array(QrCategoryImportValidator::DUPLICATE_ERROR, $r->errors, true));
 
         return view('admin.qr-tool.import.preview', [
+            'group' => $group,
             'category' => $category,
             'storedFile' => $storedFile,
             'mapping' => $mapping,
             'totalRows' => count($rows),
             'validCount' => count($validRows),
-            'invalidCount' => count($invalidRows),
-            'sampleErrors' => array_slice($invalidRows, 0, 25),
-            'moreErrors' => max(0, count($invalidRows) - 25),
+            'duplicateCount' => count($duplicateRows),
+            'invalidCount' => count($otherInvalidRows),
+            'sampleDuplicates' => array_slice($duplicateRows, 0, 25),
+            'moreDuplicates' => max(0, count($duplicateRows) - 25),
+            'sampleErrors' => array_slice($otherInvalidRows, 0, 25),
+            'moreErrors' => max(0, count($otherInvalidRows) - 25),
         ]);
     }
 
-    public function errorReport(Request $request, QrCategory $category): Response
+    public function errorReport(Request $request, QrGroup $group): Response
     {
         $this->authorize('create', QrCertificate::class);
-        $this->authorize('view', $category);
+        $category = $this->requirePrimaryCategory();
 
         [$path] = $this->resolveStoredFile($request);
         $mapping = $this->sanitizeMapping($request->input('mapping', []));
         $data = $this->readStoredFile($path);
 
         $invalidRows = array_filter(
-            $this->validator->validateRows($category, $data['rows'], $mapping),
+            $this->validator->validateRows($category, $group, $data['rows'], $mapping),
             fn ($r) => ! $r->isValid()
         );
 
@@ -178,10 +225,10 @@ class QrImportController extends Controller
         ]);
     }
 
-    public function confirm(Request $request, QrCategory $category): View
+    public function confirm(Request $request, QrGroup $group): View
     {
         $this->authorize('create', QrCertificate::class);
-        $this->authorize('view', $category);
+        $category = $this->requirePrimaryCategory();
 
         [$path, $storedFile] = $this->resolveStoredFile($request);
         $mapping = $this->sanitizeMapping($request->input('mapping', []));
@@ -192,15 +239,16 @@ class QrImportController extends Controller
             throw ValidationException::withMessages(['mapping' => $mappingErrors]);
         }
 
-        $rows = $this->validator->validateRows($category, $data['rows'], $mapping);
+        $rows = $this->validator->validateRows($category, $group, $data['rows'], $mapping);
         $validRows = array_values(array_filter($rows, fn ($r) => $r->isValid()));
         $invalidCount = count($rows) - count($validRows);
 
-        $summary = $this->importer->import($category, $validRows, $request->user());
+        $summary = $this->importer->import($category, $group, $validRows, $request->user());
 
         Storage::disk('local')->delete($path);
 
         return view('admin.qr-tool.import.result', [
+            'group' => $group,
             'category' => $category,
             'summary' => $summary,
             'skippedTotal' => $invalidCount + $summary->skipped,
@@ -249,5 +297,13 @@ class QrImportController extends Controller
         }
 
         return $mapping;
+    }
+
+    private function requirePrimaryCategory(): QrCategory
+    {
+        $category = $this->categories->primary();
+        abort_if($category === null, 500, 'The QR tool\'s primary category is not configured. Run php artisan db:seed --class=QrCategorySeeder.');
+
+        return $category;
     }
 }

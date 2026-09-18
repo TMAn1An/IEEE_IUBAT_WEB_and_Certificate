@@ -7,9 +7,11 @@ use App\Http\Requests\Admin\GenerateQrRequest;
 use App\Models\QrCategory;
 use App\Models\QrCertificate;
 use App\Models\QrConferenceType;
+use App\Services\Certificates\Export\ExcelFormulaGuard;
 use App\Services\Certificates\QrCodeService;
 use App\Services\QrTool\QrCategoryService;
 use App\Services\QrTool\QrCertificateIssuanceService;
+use App\Services\QrTool\QrGroupService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Response;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -33,6 +35,7 @@ class QrGenerateController extends Controller
     public function __construct(
         private readonly QrCertificateIssuanceService $issuance,
         private readonly QrCategoryService $categories,
+        private readonly QrGroupService $groups,
     ) {}
 
     public function show(): View
@@ -46,17 +49,26 @@ class QrGenerateController extends Controller
     {
         $category = $this->requirePrimaryCategory();
 
+        $role = (string) $request->input('role_select');
+        $includeConference = $request->boolean('include_conference');
+        $eventType = $includeConference ? $request->input('conference_type') : null;
+        $eventName = $includeConference ? $request->input('conference_select') : null;
+
+        // The group is resolved automatically from Event Type + Event Name +
+        // Role -- the admin never visits a category/group page first. See
+        // QrGroupService and docs/CERTIFICATE_SYSTEM.md §Simple QR tool:
+        // automatic grouping.
+        $group = $this->groups->resolve($eventType, $eventName, $role);
+
         $fieldValues = [
             'recipient_name' => $request->string('name')->trim()->toString(),
-            'role' => $request->input('role_select'),
+            'role' => $role,
         ];
         if ($request->boolean('include_session')) {
             $fieldValues['session'] = trim((string) $request->input('session'));
         }
 
-        $eventName = $request->boolean('include_conference') ? $request->input('conference_select') : null;
-
-        $certificate = $this->issuance->issue($category, $fieldValues, $request->user(), $eventName);
+        $certificate = $this->issuance->issue($category, $group, $fieldValues, $request->user());
 
         $wasDuplicate = ! $certificate->wasRecentlyCreated;
         $status = $wasDuplicate
@@ -68,6 +80,8 @@ class QrGenerateController extends Controller
             'result' => $certificate,
             'resultIsDuplicate' => $wasDuplicate,
             'status' => $status,
+            'resultGroup' => $group,
+            'resultGroupCount' => $group->certificates()->count(),
         ]);
     }
 
@@ -107,7 +121,7 @@ class QrGenerateController extends Controller
             ->get();
 
         foreach ($records as $index => $record) {
-            $sheet->fromArray([
+            $sheet->fromArray(ExcelFormulaGuard::sanitizeRow([
                 $index + 1,
                 $record->event_name,
                 $record->data['role'] ?? '',
@@ -116,7 +130,7 @@ class QrGenerateController extends Controller
                 $record->codeword,
                 $record->created_at->format('Y-m-d H:i:s'),
                 '',
-            ], null, 'A'.($index + 2));
+            ]), null, 'A'.($index + 2));
         }
 
         $tmpPath = tempnam(sys_get_temp_dir(), 'qr-export').'.xlsx';
@@ -142,6 +156,8 @@ class QrGenerateController extends Controller
                 : collect(),
             'result' => null,
             'resultIsDuplicate' => false,
+            'resultGroup' => null,
+            'resultGroupCount' => 0,
         ];
     }
 

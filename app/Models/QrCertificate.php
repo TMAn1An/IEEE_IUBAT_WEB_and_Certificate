@@ -13,6 +13,7 @@ class QrCertificate extends Model
 
     protected $fillable = [
         'qr_category_id',
+        'qr_group_id',
         'recipient_name',
         'event_name',
         'data',
@@ -33,6 +34,12 @@ class QrCertificate extends Model
     public function category(): BelongsTo
     {
         return $this->belongsTo(QrCategory::class, 'qr_category_id');
+    }
+
+    /** @return BelongsTo<QrGroup, $this> */
+    public function group(): BelongsTo
+    {
+        return $this->belongsTo(QrGroup::class, 'qr_group_id');
     }
 
     /** @return BelongsTo<User, $this> */

@@ -782,3 +782,81 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   §Known differences from the old tool updated to reflect the two reversed simplifications.
   `docs/ARCHITECTURE.md` and `docs/DATABASE_DESIGN.md` updated with the two new tables/models/
   services/views and the new `config/qr-tool.php`.
+
+## Phase 6 (continued) — Automatic QR grouping + group-based Excel import (2026-09-18)
+
+- **Restored a second old-tool behavior** the previous rebuild hadn't reproduced yet: the old tool
+  automatically separated registrations into one Excel file per Event Type + Conference Name +
+  Role combination (`Conference_IEEE_BECITHCON_2026_Role_Session_Chair.xlsx`). New `qr_groups`
+  table (`id, event_type, event_name, role, group_key` unique, `is_active`, timestamps) is the
+  database equivalent — no foreign key to `qr_categories` or `CertificateTemplate`, deliberately
+  orthogonal to the schema-owning category. New `App\Services\QrTool\QrGroupService::resolve()` is
+  the one find-or-create entry point (normalizes/lowercases into a control-character-joined
+  `group_key`; a blank Event Type/Name normalizes to the literal "No Conference"). The admin never
+  visits a "create a group" screen first — the group is resolved automatically from whatever the
+  existing old-tool-parity form already submits.
+- New `qr_certificates.qr_group_id` (nullable FK, `nullOnDelete`, additive migration — no existing
+  column touched). `event_name` and `data['role']` on every created/imported certificate are now
+  always taken from the resolved group, never a raw per-row value, matching the brief's "group is
+  authoritative" requirement.
+- **Duplicate handling narrowed to the group**: `QrCertificateIssuanceService::findDuplicate()` now
+  compares Name+Session only, scoped to `qr_group_id` (Role dropped from the comparison since it's
+  guaranteed identical within a group — a different role is a different group by construction, so
+  "SANIM / Session Chair" and "SANIM / Keynote Speaker" are correctly two separate records).
+- **New Groups admin section**: `Admin\QrTool\QrGroupController` + `/admin/qr-tool/groups` (list,
+  with live record counts) and `/admin/qr-tool/groups/{group}` (records in that group, with
+  Import/Export actions). The Generate QR result panel now also shows "Saved under: ..." and
+  "Records in this group: N".
+- **Excel import rebuilt to be group-based, one implementation for both entry points**: a
+  per-group "Import Excel" link skips straight to the upload step; the general "Import Excel" nav
+  entry starts at a group chooser (pick an existing group, or type in Event Type/Event Name/Role
+  to create/reuse one) and lands on the identical upload → map → preview → confirm/errors routes —
+  there is deliberately no second importer. Route parameter renamed from `{category}` to `{group}`
+  throughout (`/admin/qr-tool/import/{group}/...`); the tool still has exactly one primary
+  category, so choosing a category for import no longer makes sense on its own.
+- **Group-consistency validation on import**: a file's own Conference/Role columns, if mapped, are
+  now validate-only — a mismatch against the selected destination group produces a row-numbered
+  error (`Row 17: Role "Keynote Speaker" does not match destination group "Session Chair".`)
+  instead of silently importing under the wrong group. Duplicate detection is scoped to the
+  destination group (Name+Session) and now separated from other validation errors as its own
+  "Duplicates" count/list on the preview screen, per the brief's explicit preview format.
+- **New Excel headings/targets**: `QrImportMappingTarget::EVENT_NAME` (a per-row override) removed
+  — replaced with `CONFERENCE_VALIDATE`/`ROLE_VALIDATE` (validate-only). "Role" is no longer a
+  normal mappable category field during import; it's always taken from the destination group.
+- **Closed a flagged CLAUDE.md gap while touching every Excel export path in this phase**: neither
+  the category-wide nor any new export previously guarded against formula injection. Added
+  `App\Services\Certificates\Export\ExcelFormulaGuard` (prefixes a value starting with `= + - @`
+  with a leading apostrophe, matching the archived Flask tool's `safe_excel_text()`) and applied it
+  to `QrGenerateController::downloadExcel()` and the new `QrGroupController::export()`.
+- **Verification**: added `eventType` to `VerificationResult`/the public verification page — a
+  verified simple-QR record now additionally shows its group's Event Type (e.g. "Conference")
+  above "Conference/Event", read live via `$certificate->group?->event_type`. Null/hidden for the
+  advanced system and for any simple-QR record predating this feature (no `qr_group_id`).
+- **Bug caught immediately by the rewritten import tests, before anything shipped**: the same
+  route-parameter-name mismatch documented in an earlier Phase 6 entry recurred —
+  `UploadQrImportRequest::authorize()` still read `$this->route('category')`, but the route
+  parameter is now `{group}`. Fixed by dropping the now-nonsensical per-object `view` check
+  entirely in favor of the same `QrCertificate::create` ability every other import/generate action
+  already gates on.
+- **Tests**: `tests/Feature/Admin/QrToolImportTest.php` rewritten for the group-based routes/
+  mapping targets, plus two new tests (mismatched-role rejection, group-scoped duplicate
+  detection) and a `choose-group` page test. New `tests/Feature/Admin/QrToolGroupingTest.php` (15
+  tests: no-group-required, auto-create-on-first-generation, group reuse for identical Event
+  Type+Name+Role, a different group per differing role/event name/event type, blank-conference
+  normalizes to a stable group, DB-level `group_key` uniqueness, result-panel group/count display,
+  groups index/show pages, per-group export filename convention, group-scoped duplicate behavior,
+  same-person-different-role is not a duplicate, verification still works and shows Event Type,
+  advanced system unaffected). `tests/Feature/PublicVerificationTest.php` updated for the new
+  `issue()`/`validateRows()`/`import()` signatures. 107 tests pass total, 459 assertions, no
+  regressions (confirmed via a fresh migration).
+- **Pint**: clean, 161 files.
+- **Manual QA**: exercised through the rewritten/added automated HTTP tests themselves (this
+  environment has no browser) — covers auto-group-creation, group reuse and splitting, the Groups
+  index/show pages, the per-group Excel export's filename and content, the full group-based import
+  flow (choose/create group → upload → map → preview with duplicate/error separation → confirm),
+  and the verification page's new Event Type row. No real browser/phone side-by-side check was
+  performed.
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md` — new §Automatic QR grouping subsection; §Duplicate
+  handling, §Excel export, and §Excel import rewritten for group-scoping; §Known differences and
+  §Public verification updated. `docs/DATABASE_DESIGN.md` — new `qr_groups` section, entity
+  diagram and `qr_certificates` table updated for `qr_group_id`.

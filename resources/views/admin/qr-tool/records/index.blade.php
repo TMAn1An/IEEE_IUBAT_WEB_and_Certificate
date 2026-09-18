@@ -8,7 +8,7 @@
       @endif
     </form>
     <div style="display:flex;gap:8px">
-      <a href="{{ route('admin.qr.import.choose-category') }}" class="btn btn--ghost">Import Excel</a>
+      <a href="{{ route('admin.qr.import.choose-group') }}" class="btn btn--ghost">Import Excel</a>
       <a href="{{ route('admin.qr.generate.show') }}" class="btn btn--primary">Generate QR</a>
     </div>
   </div>

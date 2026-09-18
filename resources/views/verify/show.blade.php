@@ -67,6 +67,12 @@
                   <dd>{{ $result->templateName }}</dd>
                 </div>
               @endif
+              @if ($result->eventType)
+                <div class="verify-row">
+                  <dt>Event Type</dt>
+                  <dd>{{ $result->eventType }}</dd>
+                </div>
+              @endif
               @if ($result->eventName)
                 <div class="verify-row">
                   <dt>Conference/Event</dt>

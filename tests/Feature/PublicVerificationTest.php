@@ -10,6 +10,7 @@ use App\Models\CertificateTemplate;
 use App\Models\QrCategory;
 use App\Models\QrCategoryField;
 use App\Models\QrCertificate;
+use App\Models\QrGroup;
 use App\Models\TemplateField;
 use App\Models\User;
 use App\Services\Certificates\CertificateSnapshotService;
@@ -18,6 +19,7 @@ use App\Services\Certificates\QrCodeService;
 use App\Services\QrTool\Import\QrCategoryImportService;
 use App\Services\QrTool\Import\QrCategoryImportValidator;
 use App\Services\QrTool\QrCertificateIssuanceService;
+use App\Services\QrTool\QrGroupService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
@@ -93,6 +95,11 @@ class PublicVerificationTest extends TestCase
         return "/certificate/verify/{$codeword}";
     }
 
+    private function groupFor(QrCategory $category, string $role = 'Volunteer'): QrGroup
+    {
+        return app(QrGroupService::class)->resolve('Conference', $category->event_name, $role);
+    }
+
     public function test_route_requires_no_login(): void
     {
         $certificate = Certificate::factory()->create();
@@ -108,7 +115,7 @@ class PublicVerificationTest extends TestCase
         $manager = User::factory()->create();
         $category = $this->qrCategoryWithFields($manager);
 
-        $certificate = app(QrCertificateIssuanceService::class)->issue($category, [
+        $certificate = app(QrCertificateIssuanceService::class)->issue($category, $this->groupFor($category), [
             'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
 
@@ -125,12 +132,13 @@ class PublicVerificationTest extends TestCase
     {
         $manager = User::factory()->create();
         $category = $this->qrCategoryWithFields($manager);
+        $group = $this->groupFor($category);
 
         $rows = [['Jane Import', 'Volunteer', 'Track A']];
         $mapping = [0 => 'recipient_name', 1 => 'role', 2 => 'session'];
-        $validated = app(QrCategoryImportValidator::class)->validateRows($category, $rows, $mapping);
+        $validated = app(QrCategoryImportValidator::class)->validateRows($category, $group, $rows, $mapping);
 
-        app(QrCategoryImportService::class)->import($category, $validated, $manager);
+        app(QrCategoryImportService::class)->import($category, $group, $validated, $manager);
         $certificate = QrCertificate::where('recipient_name', 'Jane Import')->firstOrFail();
 
         $this->get($this->verifyUrl($certificate->codeword))
@@ -173,7 +181,7 @@ class PublicVerificationTest extends TestCase
             'required' => false, 'show_on_verification' => false,
         ]);
 
-        $certificate = app(QrCertificateIssuanceService::class)->issue($category, [
+        $certificate = app(QrCertificateIssuanceService::class)->issue($category, $this->groupFor($category), [
             'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A', 'email' => 'secret@example.com',
         ], $manager);
 
@@ -186,7 +194,7 @@ class PublicVerificationTest extends TestCase
     {
         $manager = User::factory()->create();
         $category = $this->qrCategoryWithFields($manager);
-        $certificate = app(QrCertificateIssuanceService::class)->issue($category, [
+        $certificate = app(QrCertificateIssuanceService::class)->issue($category, $this->groupFor($category), [
             'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
 
@@ -215,7 +223,7 @@ class PublicVerificationTest extends TestCase
     {
         $manager = User::factory()->create();
         $category = $this->qrCategoryWithFields($manager);
-        app(QrCertificateIssuanceService::class)->issue($category, [
+        app(QrCertificateIssuanceService::class)->issue($category, $this->groupFor($category), [
             'recipient_name' => 'Should Not Appear', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
 
@@ -274,7 +282,7 @@ class PublicVerificationTest extends TestCase
         $this->get(parse_url($url, PHP_URL_PATH))->assertOk()->assertSee('Certificate Verified');
 
         $category = $this->qrCategoryWithFields($manager);
-        $qrCertificate = app(QrCertificateIssuanceService::class)->issue($category, [
+        $qrCertificate = app(QrCertificateIssuanceService::class)->issue($category, $this->groupFor($category), [
             'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
         $qrUrl = app(QrCodeService::class)->verificationUrlForCodeword($qrCertificate->codeword);

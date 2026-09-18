@@ -12,16 +12,27 @@ namespace App\Services\QrTool\Import;
  * was a local filesystem path -- the QR is regenerated from the preserved
  * codeword instead, never imported). Name maps to whichever field is
  * flagged `is_recipient_name`, same as the live generate-QR form.
+ *
+ * Every import now happens INTO a destination QrGroup (see
+ * QrCategoryImportValidator/QrCategoryImportService), which is authoritative
+ * for Event Type/Event Name/Role -- so, unlike the old per-category
+ * importer, a file's own Conference/Role columns are no longer mapped as
+ * value overrides. They can only be used to double check the file actually
+ * belongs to the selected group (CONFERENCE_VALIDATE/ROLE_VALIDATE) — see
+ * docs/CERTIFICATE_SYSTEM.md §Simple QR tool: group-based import.
  */
 final class QrImportMappingTarget
 {
     public const CODEWORD = '_codeword';
 
-    /** The old tool's "Conference" column -- an optional per-row override of the category's own `event_name`. */
-    public const EVENT_NAME = '_event_name';
-
     /** The old tool's "Created At" column -- preserves the original registration date/time when present and parseable. */
     public const CREATED_AT = '_created_at';
+
+    /** The old tool's "Conference" column, validate-only: must match the destination group's event_name if present. */
+    public const CONFERENCE_VALIDATE = '_conference_validate';
+
+    /** The old tool's "Role" column, validate-only: must match the destination group's role if present. */
+    public const ROLE_VALIDATE = '_role_validate';
 
     public const IGNORE = '_ignore';
 }

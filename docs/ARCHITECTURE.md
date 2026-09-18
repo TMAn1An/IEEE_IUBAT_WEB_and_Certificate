@@ -52,7 +52,11 @@ app/
                                           # server-side instead of localStorage
           QrRecordsController.php        # full searchable list/detail for qr_certificates (secondary
                                           # to the main page's own inline "Recent Entries")
-          QrImportController.php         # historical Excel import (old tool's real headings)
+          QrGroupController.php          # Phase 6 (grouping) -- /admin/qr-tool/groups: list groups
+                                          # + live record counts, per-group records/export
+          QrImportController.php         # historical Excel import (old tool's real headings),
+                                          # group-based (Phase 6, grouping) -- one implementation,
+                                          # reached either per-group or via a group chooser first
           QrCategoryController.php       # multi-category CRUD (name/event_name/is_active, no PDF/
                                           # layout) -- exists for future categories; the main page
                                           # doesn't expose picking one, per explicit instruction
@@ -81,6 +85,9 @@ app/
                                                         # fields[{key}] shape used elsewhere
         UploadQrImportRequest.php                     # Phase 6 — mimes:xlsx + size check for the
                                                         # simple QR tool's Excel import upload step
+                                                        # (authorizes on QrCertificate::create only --
+                                                        # the route parameter is a QrGroup, not a
+                                                        # QrCategory, as of the grouping feature)
         StoreQrCategoryRequest.php, UpdateQrCategoryRequest.php             # Phase 6
         StoreQrCategoryFieldRequest.php, UpdateQrCategoryFieldRequest.php   # Phase 6
         # planned: UploadBatchRequest, etc. (Phase 7)
@@ -110,6 +117,8 @@ app/
     Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5
     QrCategory.php, QrCategoryField.php, QrCertificate.php   # Phase 6 — the simple QR tool's own
                                                                # models, no FK to any of the above
+    QrGroup.php                    # Phase 6 (grouping) -- auto-created Event Type + Event Name +
+                                     # Role combination; no FK to QrCategory or CertificateTemplate
     QrConferenceType.php, QrConferenceOption.php   # Phase 6 -- persisted role/conference option
                                                      # lists, replacing the old tool's localStorage
     # planned: VerificationLog, AuditLog (still future -- public verification itself shipped
@@ -149,6 +158,10 @@ app/
       Import/
         ExcelFileReader.php             # SHARED with the simple QR tool -- reads a .xlsx's headers
                                           # + rows via PhpSpreadsheet, no schema assumptions at all
+      Export/
+        ExcelFormulaGuard.php           # SHARED with the simple QR tool -- prefixes a `= + - @`
+                                          # leading cell value with an apostrophe before any Excel
+                                          # export (CLAUDE.md's formula-injection rule)
       Verification/                # public verification -- serves BOTH sources
         CertificateVerificationService.php  # the one place the public route looks anything up:
                                               # QrCertificate first, then Certificate, each an exact
@@ -171,14 +184,22 @@ app/
                                           # role option" buttons — mirrors TemplateFieldService, not shared
       QrConferenceOptionService.php     # addType()/removeType()/addOption()/removeOption() for the
                                           # old tool's conference type/name add-remove buttons
+      QrGroupService.php                # Phase 6 (grouping) -- the one find-or-create entry point
+                                          # for QrGroup (resolve() from Event Type/Event Name/Role),
+                                          # plus groupKey()/label()/exportFilename() helpers
       QrCertificateIssuanceService.php  # the no-PDF issuance path: codeword + DB row, PLUS
                                           # findDuplicate() reproducing the old tool's record_exists()
+                                          # -- scoped to qr_group_id (Name+Session) as of grouping
       Import/
-        QrImportMappingTarget.php       # codeword/event-name-override/created-at/ignore targets —
-                                          # no separate "recipient name" target, same reasoning as
-                                          # the advanced importer's identical fix (see changelog)
-        QrCategoryImportValidator.php   # single source of truth for mapping + per-row validation
-        QrCategoryImportService.php     # writes valid rows to qr_certificates, one transaction per
+        QrImportMappingTarget.php       # codeword/created-at/ignore/conference-validate/role-
+                                          # validate targets -- no per-row event-name override as of
+                                          # grouping (the destination QrGroup is authoritative); no
+                                          # separate "recipient name" target either, same reasoning
+                                          # as the advanced importer's identical fix (see changelog)
+        QrCategoryImportValidator.php   # single source of truth for mapping + per-row validation,
+                                          # PLUS group-consistency + group-scoped duplicate checks
+        QrCategoryImportService.php     # writes valid rows to qr_certificates (qr_group_id +
+                                          # group-authoritative event_name/role), one transaction per
                                           # row (partial import is intentional)
         QrImportRowResult.php, QrImportSummary.php   # DTOs
         VerificationResult.php              # DTO the view actually receives -- NOT the Certificate
@@ -229,7 +250,9 @@ resources/
                                      # IEEEQRCODEGENERATOR-main/templates/index.html's actual layout
         records/ (index, show)     # the full searchable list (secondary to tool.blade.php's own
                                      # inline "Recent Entries")
-        import/ (choose-category, upload, mapping, preview, result)
+        groups/ (index, show)       # Phase 6 (grouping) -- list auto-created groups + record
+                                     # counts; per-group records list with Import/Export actions
+        import/ (choose-group, upload, mapping, preview, result)   # group-based (Phase 6, grouping)
         categories/ (index, create, edit, fields/create, fields/edit, fields/_form.blade.php)
       # planned: batches/ (Phase 7)
     verify/

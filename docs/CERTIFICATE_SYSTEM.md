@@ -723,15 +723,56 @@ instead of keeping them only temporarily in the browser":
   unaffected. Verified by a dedicated test
   (`test_role_option_remove_does_not_alter_existing_records`).
 
+### Automatic QR grouping (`qr_groups`)
+
+Restores a second old-tool behavior that the first old-tool-parity rebuild hadn't reproduced yet:
+the old tool automatically separated registrations into one Excel file per Event Type + Conference
+Name + Role combination (e.g. `Conference_IEEE_BECITHCON_2026_Role_Session_Chair.xlsx`). The
+database version of that concept is the `qr_groups` table — `id, event_type, event_name, role,
+group_key (unique), is_active, timestamps` — with **no** foreign key to `CertificateTemplate` or
+`qr_categories`; a group is an orthogonal concept from the category that supplies the form schema.
+
+- `App\Services\QrTool\QrGroupService::resolve($eventType, $eventName, $role)` is the one
+  find-or-create entry point, called from `QrGenerateController::store()` (live generation) and
+  from the group-based importer (§Excel import below). It normalizes (trim, collapse whitespace)
+  and lowercases into a `group_key` (joined with the ASCII "unit separator" control character, not
+  a printable delimiter, so a name that happens to contain `|` can't collide) before the
+  find-or-create — so "Session Chair" and " session   chair " reuse the same group. Leaving
+  "Include conference/event" unchecked normalizes both event fields to the literal string
+  `"No Conference"` (matching the old tool's own `No_Conference` filename placeholder) rather than
+  leaving the group's identity ambiguous.
+- The admin never visits a "create a group" screen before generating a QR — the group is always
+  resolved automatically, behind the scenes, from whatever Event Type/Event Name/Role the existing
+  old-tool-parity form already submits. The Generate QR page's markup is unchanged.
+- **Not the same concept as the persisted OPTION lists** (§Persisted option lists above — role
+  dropdown options, `qr_conference_types`/`qr_conference_options`): those are curated, selectable
+  values an admin adds ahead of time. A group is an automatically created *combination* of
+  whichever values were actually submitted. Adding a role option never creates a group; only
+  generating a QR (or importing a row) with that role does.
+- `QrCertificate.qr_group_id` (nullable FK, `nullOnDelete`) records which group a record belongs
+  to, alongside its existing `qr_category_id` (still the field-schema owner). `event_name` and
+  `data['role']` on a created/imported certificate are always taken from the resolved group, never
+  from a raw per-row/per-submission value directly — see §Duplicate handling and §Excel import.
+- `Admin\QrTool\QrGroupController` (`/admin/qr-tool/groups`) lists every group with a live record
+  count, and a per-group page (`/admin/qr-tool/groups/{group}`) lists its records with
+  Import/Export actions — the database equivalent of "which Excel file is this."
+- The Generate QR result panel additionally shows "Saved under: Conference / IEEE BECITHCON 2026 /
+  Session Chair" and "Records in this group: N" once a group is resolved.
+
 ### Duplicate handling
 
 Reproduced deliberately, not skipped: `QrCertificateIssuanceService::findDuplicate()` reimplements
 the old tool's `record_exists()` — an exact, case-insensitive/trimmed match across every submitted
-field value (for the seeded category, that's name+role+session, the old tool's own fixed fields)
-within the same category. On a match, `issue()` returns the **existing** `QrCertificate` instead of
-creating a new row; the controller checks `$certificate->wasRecentlyCreated` (Eloquent's own
-"was this just inserted" flag) to show a "Matched an existing entry" note instead of "Saved to the
-database."
+field value **excluding `role`**, scoped to the same `qr_group_id`. Role is excluded from the
+comparison because it's already guaranteed identical for every record in a group (a different role
+resolves to a different group entirely, per §Automatic QR grouping above) — for the seeded
+category this means the check is effectively name+session, matching the old tool's own
+name+role+session check once role is factored out as redundant. On a match, `issue()` returns the
+**existing** `QrCertificate` instead of creating a new row; the controller checks
+`$certificate->wasRecentlyCreated` (Eloquent's own "was this just inserted" flag) to show a
+"Matched an existing entry" note instead of "Saved to the database." The same person with a
+*different* role (e.g. "SANIM / Session Chair" and "SANIM / Keynote Speaker") is never a duplicate
+— it's two different groups by construction.
 
 **One deliberate improvement over the old tool's exact response, explained rather than silently
 changed**: the old tool's duplicate path shows only a flash-message mentioning the existing
@@ -741,9 +782,6 @@ the matched record, which directly satisfies the new brief's own instruction to 
 existing record and QR rather than generating a duplicate" (its literal wording asks for more than
 the old tool's plain text-only response gave).
 
-Not reproduced: the duplicate check is **not** scoped to the conference/event selection, exactly
-matching the old tool's own `record_exists()` (it never considered conference either).
-
 ### Excel export
 
 `GET /admin/qr-tool/generate/export.xlsx` builds a `.xlsx` on the fly from the current
@@ -752,6 +790,19 @@ import (`SL, Conference, Role, Name, Session, Codeword, Created At, QR File`). `
 blank — there is no file to reference; the QR is generated on demand from the codeword. Excel is
 export-only here, never live storage — the database stays the one source of truth, per the brief's
 explicit "Do not use Excel as live storage."
+
+**Per-group export** (`GET /admin/qr-tool/groups/{group}/export.xlsx`, `QrGroupController::export()`)
+builds the identical sheet scoped to one group, named with the old tool's exact filename convention
+(`QrGroupService::exportFilename()`, reproducing `filename_part()` from
+`IEEEQRCODEGENERATOR-main/app.py`): `Conference_IEEE_BECITHCON_2026_Role_Session_Chair.xlsx`. "Do
+not store the workbook as the primary record source" — as with the category-wide export, this is
+regenerated from the database on every request, never read back at runtime.
+
+Both export paths run every cell value through `App\Services\Certificates\Export\ExcelFormulaGuard`
+(CLAUDE.md's non-negotiable formula-injection rule, matching the archived Flask tool's
+`safe_excel_text()`): a string value starting with `= + - @` is prefixed with a leading apostrophe
+before being written, so a recipient name or session value can never be auto-interpreted as a
+spreadsheet formula on open.
 
 ### Records
 
@@ -770,16 +821,23 @@ everything" screen rather than the primary way to browse records.
 codeword, and the raw `data` JSON text (covers role/session/whatever a category's fields happen to
 be called, without hardcoding specific key names a different category might not have).
 
-### Excel import — using the REAL old tool's headings
+### Excel import — group-based, using the REAL old tool's headings
 
-`Admin\QrTool\QrImportController`, all under `/admin/qr-tool/import`, same shape as the advanced
-system's importer (choose category → upload → map → preview → confirm/errors) but built against
-`QrCategory`/`QrCategoryField`/`QrCertificate` and the tool's actual columns:
+`Admin\QrTool\QrImportController`, all under `/admin/qr-tool/import`, one importer implementation
+for both entry points: a per-group "Import Excel" link (from `/admin/qr-tool/groups`) skips
+straight to the upload step for that group; the general "Import Excel" nav entry starts at
+`chooseGroup()` (list existing groups, or type in Event Type/Event Name/Role to create/reuse one —
+never automatic/guessed from the file) and lands on the exact same upload → map → preview →
+confirm/errors routes. There is deliberately no second importer implementation.
+
+Since the destination group already fixes Event Type/Event Name/Role, those are **authoritative on
+every imported row regardless of the file's own columns** — a historical Excel file's own
+Conference/Role columns, if mapped at all, are validate-only:
 
 ```
 SL           -> always ignored (a per-file row counter, meaningless outside that file)
-Conference   -> optional per-row override of the category's own event_name
-Role         -> a normal mappable category field
+Conference   -> validate-only: must match the destination group's event_name if mapped+non-blank
+Role         -> validate-only: must match the destination group's role if mapped+non-blank
 Name         -> whichever field is flagged is_recipient_name (same pattern as the live form)
 Session      -> a normal mappable category field
 Codeword     -> "Existing Codeword" -- preserved verbatim if valid+unique, else a new one is generated
@@ -788,6 +846,20 @@ QR File      -> always ignored -- a local filesystem path from the old tool; the
                 from the preserved codeword instead, never imported
 ```
 
+**Group-consistency validation**: if a mapped Conference/Role column's value doesn't match the
+selected destination group, the row is **not silently imported** — it's rejected with a
+row-numbered error (e.g. `Row 17: Role "Keynote Speaker" does not match destination group "Session
+Chair".`), visible in both the preview screen and the downloadable error report. This catches the
+case where an admin picks the wrong group for a file.
+
+**Duplicate detection is scoped to the destination group** (Name+Session — Role is redundant once
+the group is fixed, same reasoning as §Duplicate handling above), checked against records already
+in that group *and* against other rows already validated earlier in the same file, so two matching
+rows in one file are also caught, not just matches against the database. The preview screen
+separates **Duplicates** from other **Errors** as two distinct counts/lists, per the brief's
+explicit preview format (`QrCategoryImportValidator::DUPLICATE_ERROR` is the shared marker both the
+controller and the tests key off).
+
 **Import is not restricted to Active categories** — historical data routinely belongs to a category
 that's since been deactivated. **No separate "Recipient Name" mapping target** — the recipient
 field is just a normal mappable field, identified by `is_recipient_name`, exactly like the live
@@ -795,8 +867,8 @@ generate-QR form (the advanced importer had the opposite design early on and it 
 see docs/CHANGELOG.md's Phase 6 entries for the incident). Same state-without-a-new-table pattern
 as the advanced importer: a server-generated UUID (`storage/app/private/imports/{uuid}.xlsx`),
 never a client-supplied path, carried through hidden form fields; confirm always re-validates from
-scratch rather than trusting preview. Partial import (skip invalid rows, import the rest) is
-explicit, same reasoning as the advanced importer. Codeword/Created-At preservation follows the
+scratch rather than trusting preview. Partial import (skip invalid/duplicate rows, import the rest)
+is explicit, same reasoning as the advanced importer. Codeword/Created-At preservation follows the
 same preserve-if-valid-and-unique / generate-or-default-otherwise rule as the advanced system's
 certificate-number/codeword handling.
 
@@ -860,6 +932,10 @@ rebuild's explicit instruction not to redesign the workflow.
    is not reproduced** — a minor UX convenience, not explicitly requested, skipped to keep scope
    tight. Every other described behavior (checkboxes, add/remove options, result panel, recent
    entries, Excel export) is reproduced.
+7. **Automatic per-combination grouping is reproduced** as the `qr_groups` table (see §Automatic QR
+   grouping above) — the old tool's separate Excel file per Event Type + Conference Name + Role is
+   now a group row with a live record count, browsable at `/admin/qr-tool/groups`, instead of a
+   file on disk.
 
 ## Bulk (Excel) generation — a different, still-future feature (Phase 7)
 
@@ -966,10 +1042,15 @@ summary:
 - **Response object, not either model**: the controller/view never receive a `Certificate` or
   `QrCertificate` — only `App\Services\Certificates\Verification\VerificationResult`, a DTO
   exposing only certificate-number (null for a simple QR record)/recipient-name/template-name (null
-  for simple)/event-name (null for advanced)/issued-date/public-fields (and only the fields each
-  outcome actually needs). `codeword`, `id`, `created_by`, `pdf_path`,
-  `template_snapshot`/`layout_snapshot` (the raw JSON), and any hidden field's value are
-  structurally unreachable from the Blade view, not merely "not currently rendered."
+  for simple)/event-type (null for advanced — see §Automatic QR grouping)/event-name (null for
+  advanced)/issued-date/public-fields (and only the fields each outcome actually needs). `codeword`,
+  `id`, `created_by`, `pdf_path`, `template_snapshot`/`layout_snapshot` (the raw JSON), and any
+  hidden field's value are structurally unreachable from the Blade view, not merely "not currently
+  rendered."
+- **Event Type** (Phase 6 addition, alongside automatic grouping): a verified simple-QR record
+  additionally shows its group's `event_type` (e.g. "Conference") above "Conference/Event", read
+  live from `$certificate->group?->event_type` — null and hidden for an advanced-system record,
+  and null/hidden for a simple QR record created before this feature shipped (no `qr_group_id`).
 - All values render through Blade's default `{{ }}` escaping — no `{!! !!}` anywhere on this page.
 - Headers: `X-Robots-Tag: noindex, nofollow` + a `<meta name="robots" content="noindex,nofollow">`
   tag (these URLs are per-certificate secrets, never meant to be indexed), and
@@ -1112,3 +1193,21 @@ MySQL is the only source of truth at all times. Excel files are:
   the now-redundant `config('certificates.verification_url_path')` key: `QrCodeService::
   verificationUrlFor()` now builds the URL via Laravel's `route()` helper against the real
   `certificate.verify` route instead of string-concatenating a config value.
+- _(Phase 6, continued)_ Restored automatic QR grouping — see §Automatic QR grouping above. New
+  `qr_groups` table + `qr_certificates.qr_group_id` (both new migrations, no changes to existing
+  columns). `QrGroupService` is the one find-or-create entry point; `QrCertificateIssuanceService`,
+  `QrGenerateController`, `QrCategoryImportValidator`/`QrCategoryImportService`, and the whole
+  Excel importer were updated to resolve/require a group. The importer's URL shape changed from
+  `/admin/qr-tool/import/{category}/...` to `/admin/qr-tool/import/{group}/...` (category is no
+  longer chosen for import — the tool has exactly one primary category, and a group now carries
+  Event Type/Event Name/Role instead). New `Admin\QrTool\QrGroupController` +
+  `/admin/qr-tool/groups` pages. Added "Event Type" to `VerificationResult`/the public verification
+  page. Closed a pre-existing gap flagged against CLAUDE.md's non-negotiable Excel rules while
+  touching every export path in this phase: added `App\Services\Certificates\Export\
+  ExcelFormulaGuard` (a `= + - @` leading-character guard, matching the archived Flask tool's
+  `safe_excel_text()`) and applied it to both the category-wide and the new per-group export.
+  `UploadQrImportRequest::authorize()` had the same route-parameter-name bug documented earlier in
+  this changelog (it read `$this->route('category')`, but the route parameter is now `{group}`) —
+  caught immediately by the rewritten import tests before anything shipped; fixed by dropping the
+  now-nonsensical per-object `view` check in favor of the same `QrCertificate::create` ability
+  every other import/generate action already gates on.

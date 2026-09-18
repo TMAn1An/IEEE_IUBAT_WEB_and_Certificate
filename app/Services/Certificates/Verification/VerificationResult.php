@@ -28,6 +28,7 @@ final readonly class VerificationResult
         public ?string $certificateNumber = null,
         public ?string $recipientName = null,
         public ?string $templateName = null,
+        public ?string $eventType = null,
         public ?string $eventName = null,
         public ?string $issuedAt = null,
         public array $publicFields = [],
@@ -51,9 +52,14 @@ final readonly class VerificationResult
         );
     }
 
-    /** The simple QR tool (QrCertificate) — no certificate number (the old tool never had one), has an event/conference name instead. */
+    /**
+     * The simple QR tool (QrCertificate) — no certificate number (the old
+     * tool never had one), has an event/conference name (and, since the
+     * automatic-grouping feature, an event TYPE) instead.
+     */
     public static function verifiedSimple(
         string $recipientName,
+        ?string $eventType,
         ?string $eventName,
         string $issuedAt,
         array $publicFields,
@@ -61,6 +67,7 @@ final readonly class VerificationResult
         return new self(
             outcome: VerificationOutcome::Verified,
             recipientName: $recipientName,
+            eventType: $eventType,
             eventName: $eventName,
             issuedAt: $issuedAt,
             publicFields: $publicFields,

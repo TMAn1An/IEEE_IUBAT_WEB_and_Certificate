@@ -7,6 +7,7 @@ use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
+use App\Http\Controllers\Admin\QrTool\QrGroupController;
 use App\Http\Controllers\Admin\QrTool\QrImportController;
 use App\Http\Controllers\Admin\QrTool\QrOptionsController;
 use App\Http\Controllers\Admin\QrTool\QrRecordsController;
@@ -108,12 +109,26 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::get('/records/{certificate}', [QrRecordsController::class, 'show'])->name('records.show');
         Route::get('/records/{certificate}/qr.png', [QrGenerateController::class, 'qrImage'])->name('records.qr-image');
 
-        Route::get('/import', [QrImportController::class, 'chooseCategory'])->name('import.choose-category');
-        Route::get('/import/{category}', [QrImportController::class, 'showUpload'])->name('import.upload');
-        Route::post('/import/{category}/upload', [QrImportController::class, 'handleUpload'])->name('import.upload.store');
-        Route::post('/import/{category}/preview', [QrImportController::class, 'preview'])->name('import.preview');
-        Route::post('/import/{category}/errors', [QrImportController::class, 'errorReport'])->name('import.errors');
-        Route::post('/import/{category}/confirm', [QrImportController::class, 'confirm'])->name('import.confirm');
+        // Auto-created Event Type + Event Name + Role combinations — see
+        // QrGroupService and docs/CERTIFICATE_SYSTEM.md §Simple QR tool:
+        // automatic grouping. Never created via a form of their own fields;
+        // only "create-group" below (a convenience wrapper around the same
+        // find-or-create resolver used by Generate QR and by import).
+        Route::get('/groups', [QrGroupController::class, 'index'])->name('groups.index');
+        Route::get('/groups/{group}', [QrGroupController::class, 'show'])->name('groups.show');
+        Route::get('/groups/{group}/export.xlsx', [QrGroupController::class, 'export'])->name('groups.export');
+
+        // One importer implementation, always group-based: a per-group
+        // "Import Excel" link skips straight to /import/{group}; the
+        // general "Import Excel" nav entry starts at chooseGroup() and
+        // lands on the exact same upload/mapping/preview/confirm routes.
+        Route::get('/import', [QrImportController::class, 'chooseGroup'])->name('import.choose-group');
+        Route::post('/import/create-group', [QrImportController::class, 'createGroupAndRedirect'])->name('import.create-group');
+        Route::get('/import/{group}', [QrImportController::class, 'showUpload'])->name('import.upload');
+        Route::post('/import/{group}/upload', [QrImportController::class, 'handleUpload'])->name('import.upload.store');
+        Route::post('/import/{group}/preview', [QrImportController::class, 'preview'])->name('import.preview');
+        Route::post('/import/{group}/errors', [QrImportController::class, 'errorReport'])->name('import.errors');
+        Route::post('/import/{group}/confirm', [QrImportController::class, 'confirm'])->name('import.confirm');
 
         Route::get('/categories', [QrCategoryController::class, 'index'])->name('categories.index');
         Route::get('/categories/create', [QrCategoryController::class, 'create'])->name('categories.create');

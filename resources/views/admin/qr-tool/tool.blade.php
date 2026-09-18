@@ -25,7 +25,8 @@
     <a href="{{ route('admin.dashboard') }}">Admin Dashboard</a>
     <a href="{{ route('admin.qr.generate.show') }}" class="is-active">Generate QR</a>
     <a href="{{ route('admin.qr.records.index') }}">All Records</a>
-    <a href="{{ route('admin.qr.import.choose-category') }}">Import Excel</a>
+    <a href="{{ route('admin.qr.groups.index') }}">Groups</a>
+    <a href="{{ route('admin.qr.import.choose-group') }}">Import Excel</a>
     <a href="{{ route('admin.qr.categories.index') }}">QR Categories</a>
     <form method="POST" action="{{ route('admin.logout') }}">
       @csrf
@@ -175,6 +176,17 @@
               <div class="success-note">
                 {{ $resultIsDuplicate ?? false ? 'Matched an existing entry -- showing its codeword and QR.' : 'Saved to the database.' }}
               </div>
+
+              @if (! empty($resultGroup))
+                <div class="info-row" style="margin-top:14px">
+                  <span>Saved under</span>
+                  <strong>{{ $resultGroup->event_type }} / {{ $resultGroup->event_name }} / {{ $resultGroup->role }}</strong>
+                </div>
+                <div class="info-row">
+                  <span>Records in this group</span>
+                  <strong>{{ $resultGroupCount }}</strong>
+                </div>
+              @endif
 
               <input type="text" id="verify-url" value="{{ $verificationUrl }}" style="margin-top:14px" readonly onclick="this.select()">
               <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
