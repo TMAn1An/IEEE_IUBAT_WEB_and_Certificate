@@ -627,3 +627,93 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   `docs/ARCHITECTURE.md` updated (new `VerificationController`/`Verification/` service files, the
   corrected data-flow diagram's Verification block, dependency-table note). `docs/DATABASE_DESIGN.md`
   updated (no new table needed; `CertificateStatus::Revoked` now actually consumed).
+
+## Phase 6 (rebuilt) — Simple QR tool, based on the real reference tool (2026-09-18)
+
+- **Why this is a rebuild, not an extension**: the earlier "Simplified QR workflow" (the two
+  entries above) reused `certificate_templates`/`certificates` and required an advanced
+  `CertificateTemplate` to exist before Generate QR or Import Excel would work at all — exactly the
+  dependency the user flagged as wrong ("No active templates. Activate a template first.",
+  "No templates exist yet."). The real reference tool
+  (`IEEEQRCODEGENERATOR-main/app.py` + `templates/index.html`) was inspected in full before writing
+  any code, per explicit instruction not to rely on earlier assumptions — several real findings
+  contradicted the earlier design (no "Other" role option exists anywhere in the real tool; the old
+  QR encodes plain text, not a URL; there's one fixed form/category, not several; Excel is split
+  one file per conference+role combination with the exact headings SL/Conference/Role/Name/Session/
+  Codeword/Created At/QR File). See `docs/CERTIFICATE_SYSTEM.md` §Simple QR tool for the full
+  inspection notes and §Known differences for every deliberate deviation, documented rather than
+  silently diverging.
+- **Deleted, not kept as dead code**: the incorrectly-coupled `CertificateQrController`,
+  `CertificateImportController`, `SimpleCertificateService`, and the advanced system's
+  `CertificateImportService`/`CertificateImportValidator`/`ImportMappingTarget`/`ImportRowResult`/
+  `ImportValidationResult`/`ImportSummary` (all built specifically for those two now-removed
+  controllers, with no other caller) were removed outright, along with their views and their two
+  test files (`CertificateQrGeneratorTest.php`, `CertificateExcelImportTest.php`). The genuinely
+  generic `ExcelFileReader` was kept and is now shared by both importers. The Phase 5 PDF-issuance
+  flow (`CertificateController`, `CertificateIssuanceService`, its routes/views/tests) was not
+  touched.
+- **New, fully independent schema**: `qr_categories`, `qr_category_fields`, `qr_certificates` — no
+  foreign key to `certificate_templates`/`certificates` in either direction. Proven independence,
+  not just claimed: `tests/Feature/Admin/QrToolGenerateTest.php` and `QrToolImportTest.php` both
+  run against a database with zero `certificate_templates` rows.
+- **Codeword format matches the real old tool exactly**: 16 characters, uppercase A-Z/0-9, via
+  `App\Services\QrTool\QrToolCodewordService` using PHP's CSPRNG (`random_int()`, never
+  `mt_rand()`) — reproducing the *shape* of `secrets.choice(string.ascii_uppercase +
+  string.digits)` × 16 from the real `app.py`, not converting/reusing any of its actual output. A
+  shared constant, `VerificationCodewordService::ACCEPTED_PATTERN`
+  (`[A-Za-z0-9_-]{4,128}`), already covered this format without any change — confirmed by
+  inspecting the exact generated format and the existing Excel-import format check before touching
+  the route constraint, per explicit instruction.
+- **QR content is intentionally different from the old tool**: the real tool encodes human-readable
+  text with no verification step at all (`qr_payload()` builds a multi-line label string); the
+  Laravel version encodes the public verification URL instead, per the brief's explicit
+  instruction. Documented as the single largest intentional behavior change, not a silent
+  divergence.
+- **Default category matches the real old tool exactly**: `Database\Seeders\QrCategorySeeder`
+  (runs in every environment, unlike the local/testing-only `AdminUserSeeder`) creates
+  "BECITHCON 2026" with the real `PRESET_ROLES` (`Session Chair`/`Invited Speaker`/`Keynote
+  Speaker`/`Volunteer` — no "Other", because the real tool has none) and an optional Session field,
+  matching the real form's optionality.
+- **Generate QR / Records / Import Excel / QR Categories** — new admin section
+  (`Admin\QrTool\*` controllers, `/admin/qr-tool/*` routes), structured exactly per the brief's nav
+  suggestion, with the advanced system's own nav items demoted under a separate "Advanced / Future"
+  heading. Import reuses the exact old-tool headings (SL and QR File always ignored — SL is a
+  per-file row counter with no portable meaning, QR File is a local filesystem path that's never
+  imported since the QR is regenerated from the preserved codeword instead) with auto-guessed
+  column mapping and the same preserve-if-valid-and-unique-else-generate rule for codewords as the
+  advanced importer, plus an additional "Original Created Date" mapping target to preserve a
+  historical row's real registration timestamp.
+- **Bug found and fixed during manual `tinker` testing, before writing the new mapping/validator
+  code**: an early draft copied the advanced importer's ORIGINAL (already-fixed-once) mistake of
+  using a separate "Recipient Name" mapping pseudo-target distinct from the recipient field's own
+  `key` — caught immediately this time, since the exact same class of bug had already been
+  diagnosed and fixed once in the advanced system's importer (see the first Phase 6 entry above);
+  fixed the same way, by treating the recipient field as a normal mappable field.
+- **Public verification serves both sources**: `CertificateVerificationService::verify()` now
+  checks `QrCertificate` first, then `Certificate`, returning one shared `VerificationResult` DTO
+  either way (extended with a nullable `eventName` for simple records and a now-nullable
+  `certificateNumber`/`templateName` for cases where a source doesn't have one). `QrCodeService`
+  gained `verificationUrlForCodeword()` as the one shared URL-building primitive both
+  `verificationUrlFor(Certificate)` and the simple QR tool now call — still exactly one
+  implementation, never three.
+- **Tests**: `tests/Feature/Admin/QrToolGenerateTest.php` (11) and `QrToolImportTest.php` (8) are
+  new; `tests/Feature/PublicVerificationTest.php` was rewritten to use real `QrCertificate`
+  fixtures (via `QrCertificateIssuanceService`/`QrCategoryImportService`) instead of the deleted
+  `SimpleCertificateService`, gaining one additional test (a revoked simple QR record). Net: 84
+  tests pass (65 after the deletions + 19 new), 391 assertions, confirmed from a fresh migration +
+  seed. No "Other"-role test was written — the real tool has no such behavior to test.
+- **Pint**: clean, 145 files.
+- **Manual QA**: exercised directly via `tinker` + `curl` against a live local server before writing
+  the automated tests — created the seeded BECITHCON 2026 category, confirmed zero
+  `certificate_templates` rows, generated a real QR certificate end to end (16-char codeword format
+  confirmed by regex), and confirmed its public verification page shows exactly the brief's
+  specified layout (no Certificate Number row, Conference/Event shown, Role/Session shown, no
+  duplicate recipient row). No real browser/phone QR-scan pass was performed — see the completion
+  report for what remains for the user's own manual QA.
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md`'s "Simplified QR workflow" section was replaced outright
+  (not just amended) with "Simple QR tool", including the full old-tool inspection notes, the
+  architecture table, codeword-format reasoning, and a "Known differences from the old tool"
+  section. §Public verification, §QR code, and §Snapshot/current-template fallback logic updated
+  for the dual-source lookup. `docs/ARCHITECTURE.md` and `docs/DATABASE_DESIGN.md` updated with the
+  new independent schema/services/controllers/views and corrected stale references to the deleted
+  classes.

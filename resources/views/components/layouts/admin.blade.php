@@ -18,12 +18,14 @@
     </div>
     <ul class="admin-nav">
       <li><a href="{{ route('admin.dashboard') }}" class="{{ request()->routeIs('admin.dashboard') ? 'is-active' : '' }}">Dashboard</a></li>
-      <li class="admin-nav__heading">Certificates</li>
-      <li><a href="{{ route('admin.certificates.qr.choose-template') }}" class="{{ request()->routeIs('admin.certificates.qr.*') ? 'is-active' : '' }}">Generate QR</a></li>
-      <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.index') || request()->routeIs('admin.certificates.show') || request()->routeIs('admin.certificates.download') || request()->routeIs('admin.certificates.issue') || request()->routeIs('admin.certificates.choose-template') || request()->routeIs('admin.certificates.create') || request()->routeIs('admin.certificates.store') ? 'is-active' : '' }}">All Certificates</a></li>
-      <li><a href="{{ route('admin.certificates.import.choose-template') }}" class="{{ request()->routeIs('admin.certificates.import.*') ? 'is-active' : '' }}">Import Excel</a></li>
-      <li><a href="{{ route('admin.templates.index') }}" class="{{ request()->routeIs('admin.templates.*') ? 'is-active' : '' }}">Categories/Templates</a></li>
-      <li class="admin-nav__heading">More</li>
+      <li class="admin-nav__heading">Certificate QR Tool</li>
+      <li><a href="{{ route('admin.qr.generate.choose-category') }}" class="{{ request()->routeIs('admin.qr.generate.*') ? 'is-active' : '' }}">Generate QR</a></li>
+      <li><a href="{{ route('admin.qr.records.index') }}" class="{{ request()->routeIs('admin.qr.records.*') ? 'is-active' : '' }}">Records</a></li>
+      <li><a href="{{ route('admin.qr.import.choose-category') }}" class="{{ request()->routeIs('admin.qr.import.*') ? 'is-active' : '' }}">Import Excel</a></li>
+      <li><a href="{{ route('admin.qr.categories.index') }}" class="{{ request()->routeIs('admin.qr.categories.*') ? 'is-active' : '' }}">QR Categories</a></li>
+      <li class="admin-nav__heading">Advanced / Future</li>
+      <li><a href="{{ route('admin.templates.index') }}" class="{{ request()->routeIs('admin.templates.*') ? 'is-active' : '' }}">Certificate Templates</a></li>
+      <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.*') ? 'is-active' : '' }}">Advanced Certificates</a></li>
       <li><a href="{{ route('admin.bulk-generation.index') }}" class="{{ request()->routeIs('admin.bulk-generation.*') ? 'is-active' : '' }}">Bulk Generation</a></li>
       <li><a href="{{ route('admin.batches.index') }}" class="{{ request()->routeIs('admin.batches.*') ? 'is-active' : '' }}">Batches</a></li>
       @can('viewAny', \App\Models\User::class)

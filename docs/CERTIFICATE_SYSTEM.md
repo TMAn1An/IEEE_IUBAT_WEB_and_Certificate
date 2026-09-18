@@ -550,175 +550,212 @@ QR-only certificates (Phase 6, below) have **both snapshot columns `null`** — 
 rendered for them, so there's nothing to snapshot. `certificates.show` falls back to the live
 template's current fields for labeling `data` in that case; see §Simplified QR workflow.
 
-## Simplified QR workflow — implemented Phase 6
+## Simple QR tool — implemented Phase 6, rebuilt on real old-tool inspection
 
-**Status change**: the PDF designer and automatic PDF generation (§Certificate background &
-visual layout, §PDF generation pipeline above) are **paused, not removed**. The code, tests, and
-routes from Phases 4-5 all still exist and still pass; they're simply no longer the primary admin
-workflow. The immediate production need turned out to be migrating an existing local-tool
-workflow — dynamic form -> codeword -> QR -> manual Canva placement — rather than finishing
-automatic PDF rendering. Both entry points share the same `certificates` table, the same
-`CertificateNumberService`, and the same `VerificationCodewordService`; nothing about Phase 5 was
-undone, and nothing here requires a template to have an uploaded PDF background at all.
+**This section replaces an earlier "Simplified QR workflow" design that turned out to be wrong.**
+That first version reused `certificate_templates`/`certificates` and required an advanced
+`CertificateTemplate` to exist ("No active templates. Activate a template first.") — the opposite
+of what was actually needed. It was rebuilt from scratch after directly inspecting the real
+reference tool at `IEEEQRCODEGENERATOR-main/` (`app.py` + `templates/index.html`, read in full, not
+assumed from an earlier description) and is now fully independent of the advanced system. The
+PDF designer and automatic PDF generation (§Certificate background & visual layout, §PDF
+generation pipeline above) remain **paused, not removed** — that code, its tests, and its routes
+under `/admin/certificates/*` all still exist and still pass; they're just a separate, secondary
+part of the codebase now (see §Advanced-system isolation below).
 
-### Why one table, no new certificate storage
+### What the real old tool actually does
 
-The brief was explicit about this, and the existing Phase 2 schema already fit: `recipient_name`,
-`data`, `certificate_number`, `codeword`, `status`, `issued_at`/`created_by` all mean exactly what
-a QR-only certificate needs. The only schema question was whether `pdf_path` (and the two Phase 5
-snapshot columns) could be null for a certificate with no PDF — they already were
-(`->nullable()` since the Phase 5 migration that introduced them), so **no new migration was
-needed for Phase 6** at all.
+Inspected directly, not assumed — several real findings contradicted earlier planning:
 
-### `SimpleCertificateService`
+- **One Flask app** (`app.py`, ~320 lines), **one page** (`templates/index.html`). There is no
+  multi-category system in the real tool — `CONFERENCE_OPTIONS = ["IEEE BECITHCON 2026"]`,
+  `EVENT_OPTIONS = ["BECITHCON 2026"]`. It's a single fixed form for one event.
+- **Fields**: Name (text, required), Role (a `<select>`, required), Session (a `<textarea
+  maxlength="500">`, optional via an "Include session in QR" checkbox), Conference/Event (optional
+  via a separate "Include conference/event in QR" checkbox, itself a type+name pair of dropdowns).
+- **`PRESET_ROLES = ["Session Chair", "Invited Speaker", "Keynote Speaker", "Volunteer"]` — there
+  is no "Other" option and no custom-role text field anywhere in the real code.** An earlier
+  planning draft's example describing "Other" role behavior does not match the actual tool and was
+  **not implemented** — the admin can freely add/remove role options through the page's own
+  client-side "Add role option" controls (persisted only in that browser's `localStorage`, never
+  sent to the server), which is a different, simpler mechanism than a special "Other" value.
+- **Codeword**: `generate_unique_codeword(length=16)` — `secrets.choice(string.ascii_uppercase +
+  string.digits)` × 16, i.e. **16 characters, uppercase A-Z and 0-9 only**, via Python's CSPRNG.
+  Uniqueness checked by scanning every `.xlsx` file under `registrations/` (a file-scan approach
+  CLAUDE.md's own non-negotiable rules explicitly rule out for this project — reproduced here as a
+  DB unique index instead, see below).
+- **QR content is plain text, not a URL**: `qr_payload()` builds
+  `"{conference_type}: {conference}\nRole: {role}\nName: {name}\nSession: {session}\nCodeword:
+  {codeword}"` and encodes that directly. There is no verification URL, no lookup, no database at
+  all on the verification side — scanning the QR just displays that text. The Laravel version
+  deliberately does **not** reproduce this: per the brief, its QR encodes the public verification
+  URL instead (`{APP_URL}/certificate/verify/{codeword}`), which is what makes the codeword
+  actually verifiable against a real record rather than trusted at face value. This is the single
+  largest intentional behavior change from the old tool — see §Known differences.
+- **Excel storage**: one `.xlsx` **per `{conference_type}_{conference}_Role_{role}` combination**
+  under `registrations/` (plus a `registrations.xlsx` legacy fallback file), each with the header
+  row `SL, Conference, Role, Name, Session, Codeword, Created At, QR File`. `conference_type` (the
+  type/category label, e.g. "Conference" or "Event") is used only for the filename and the QR text
+  — it is **never written to the Excel row itself**; only the specific `conference` name is.
+  `QR File` stores a local filesystem PNG filename.
+- **Duplicate handling**: `record_exists()` checks name+role+session (case-insensitive, trimmed)
+  across the target file; a match **reuses the existing codeword** (shown as a warning) rather than
+  creating a second row or blocking outright.
 
-A new, deliberately small service (`App\Services\Certificates\SimpleCertificateService`) rather
-than adding a "skip the PDF" flag to `CertificateIssuanceService`: the two flows share the
-number/codeword sub-services but have nothing else in common (no background, coordinates, fonts,
-or PDF rendering here at all). It:
+### Architecture: fully independent of the advanced system
 
-1. Confirms the template is `active`.
-2. Reads the field flagged `is_recipient_name` and copies its submitted value into
-   `certificates.recipient_name` (identical pattern to Phase 5's issuance service).
-3. Mints a certificate number (`CertificateNumberService`) and a codeword
-   (`VerificationCodewordService`), both reused unchanged from Phase 5.
-4. Inserts the `certificates` row with `pdf_path`, `template_snapshot`, and `layout_snapshot` all
-   `null`.
+New tables, all with **no foreign key to `certificate_templates` or `certificates`**:
 
-Route: `Admin\CertificateQrController` — `GET/POST /admin/certificates/generate-qr[/{template}]`.
-Same dynamic-form pattern as Phase 5's issue form (`IssueCertificateRequest`, reused verbatim —
-its rules are built from `$this->route('template')` regardless of which route invoked it).
+| Table | Purpose |
+|---|---|
+| `qr_categories` | `name`, `slug`, `event_name` (the old tool's "Conference/Event", fixed per category rather than a per-submission toggle — see §Known differences), `description`, `is_active` (a plain boolean, no draft/active/archived lifecycle), `created_by`. |
+| `qr_category_fields` | `qr_category_id`, `label`, `key`, `type` (`App\Enums\QrCategoryFieldType` — text/long_text/number/date/dropdown only, no PDF-related system-field cases), `required`, `options`, `sort_order`, `is_recipient_name`, `show_on_verification`. No `position`/`style` JSON — there is no PDF placement concept in this tool at all (per the brief's explicit "Keep this simple. No PDF position. No style JSON. No layout."). |
+| `qr_certificates` | `qr_category_id`, `recipient_name`, `event_name` (denormalized from the category at creation time, or an imported row's own preserved value), `data` (JSON, dynamic per category), `codeword` (unique, 16-char format — see below), `status` (`App\Enums\QrCertificateStatus`: `Active`/`Revoked` only — no `Reissued`/`GenerationFailed`, since neither concept exists here), `created_by`. No `certificate_number` (the old tool never had one — "SL" was a per-file row counter, not a formatted number), no `pdf_path`/`template_snapshot`/`layout_snapshot` (no PDF is ever rendered, and unlike the advanced system, this tool does not snapshot field definitions at issuance — see §No snapshot, a deliberate simplification below). |
 
-### QR PNG generation
+Models: `App\Models\QrCategory`, `QrCategoryField`, `QrCertificate` — flat under `App\Models`,
+matching this project's existing convention. Services: `App\Services\QrTool\*` — a fully separate
+namespace, mirroring the advanced system's service *structure* (a codeword service, a field-rules
+service, an issuance service, an `Import/` sub-namespace) without sharing its *code*, except for
+two genuinely generic pieces: `App\Services\Certificates\Pdf\..\Import\ExcelFileReader` (raw
+headers/rows extraction, no schema assumptions) and `App\Services\Certificates\QrCodeService`
+(builds a verification URL and renders a QR from a bare codeword string — it knows nothing about
+either domain model, which is exactly why it's safe to share; see §Public verification integration
+below).
 
-`QrCodeService` gained one new method, `pngBytes()`, alongside the Phase 5 `drawOnPdf()`. **No new
-package**: `TCPDF2DBarcode::getBarcodePngData()` generates a real standalone PNG with no PDF
-document involved at all — confirmed working in the Phase 6 spike, using the exact same QR
-encoder Phase 5's in-PDF QR already used. The QR is generated **on demand, every request**
-(`GET /admin/certificates/{certificate}/qr.png`), never written to disk — it's fully deterministic
-from the verification URL (which is itself fully deterministic from the certificate's `codeword`),
-so there's nothing to persist and nothing to clean up later.
+### No snapshot (a deliberate simplification)
 
-The certificate detail page (`certificates/show.blade.php`) shows the QR inline, a "Download QR
-PNG" link (`download` attribute, forces a save), a read-only verification-link field with a "Copy
-link" button (Clipboard API, `navigator.clipboard.writeText`), and an optional "Copy QR image"
-button (Clipboard API's `ClipboardItem`, feature-detected and hidden entirely in browsers that
-don't support it — PNG download is the guaranteed path per the brief). The admin downloads the PNG
-and places it into the existing Canva design by hand; nothing here touches Canva or produces a
-final certificate image/PDF.
+The advanced system snapshots template field definitions at issuance
+(`certificates.template_snapshot`) so an admin editing a live template can never silently change
+what an already-issued certificate displays. The simple QR tool does **not** build an equivalent
+for `qr_certificates` — the brief's schema for this table has no snapshot columns, and "keep this
+simple" was explicit. Consequence, documented rather than hidden: public field visibility for a
+`QrCertificate` is always resolved from the **live** `qr_category_fields` at verification time, so
+toggling a category field's `show_on_verification` later does affect every historical record under
+that category. Revisit only if this proves to be a real problem in practice.
 
-### Excel import
+### Codeword format compatibility
 
-Historical data lives in multiple `.xlsx` files (often one per certificate category), and their
-column headings are **not** consistent with each other or with this system's field labels — the
-importer's entire reason to exist is the mapping step, not just a bulk-insert.
+`App\Services\QrTool\QrToolCodewordService` reproduces the real format exactly: 16 characters uppercase
+A-Z/0-9, generated with PHP's own CSPRNG (`random_int()` indexing into the alphabet — never
+`mt_rand()`, per CLAUDE.md), never by converting an existing old-tool codeword. Uniqueness is a real
+DB unique index on `qr_certificates.codeword`, checked and retried inside the issuance transaction
+— not a file scan (the old tool's `load_existing_codewords()` approach, which CLAUDE.md's
+non-negotiable rules explicitly rule out for this project). This is a genuinely different shape
+from the advanced system's 64-character lowercase-hex codeword — both are accepted by the same
+public verification route without any special-casing, because
+`VerificationCodewordService::ACCEPTED_PATTERN` (`[A-Za-z0-9_-]{4,128}`) was already broad enough
+to cover both; see §Public verification integration.
 
-Routes (`Admin\CertificateImportController`, all under `/admin/certificates/import`):
+### Generate QR workflow
+
+`Admin\QrTool\QrGenerateController` — `GET/POST /admin/qr-tool/generate[/{category}]`. Choose an
+active category, fill its dynamic form (`GenerateQrRequest`, rules built per-field from
+`QrCategoryFieldRules`, mirroring but not sharing code with `IssueCertificateRequest`), submit.
+`QrCertificateIssuanceService::issue()`:
+
+1. Confirms the category is `is_active`.
+2. Reads the field flagged `is_recipient_name` and copies its value into `recipient_name`.
+3. Mints a codeword (`QrToolCodewordService`, retried on the rare collision).
+4. Inserts the `qr_certificates` row with `event_name` copied from the category.
+
+Result page (the record's own detail page, `qr-tool/records/show.blade.php`) shows recipient,
+category, event/conference, every field value, the QR inline, a "Download QR PNG" button, "Copy
+Verification Link", "View Verification" (opens the real public page), an optional "Copy QR image"
+(Clipboard API, feature-detected, hidden where unsupported — PNG download is the guaranteed path),
+and "Create another". No certificate number anywhere, per the brief's explicit instruction not to
+force that concept into this tool.
+
+### Records
+
+`Admin\QrTool\QrRecordsController` — `GET /admin/qr-tool/records`, search across recipient name,
+codeword, and the raw `data` JSON text (covers role/session/whatever a category's fields happen to
+be called, without hardcoding specific key names a different category might not have).
+
+### Excel import — using the REAL old tool's headings
+
+`Admin\QrTool\QrImportController`, all under `/admin/qr-tool/import`, same shape as the advanced
+system's importer (choose category → upload → map → preview → confirm/errors) but built against
+`QrCategory`/`QrCategoryField`/`QrCertificate` and the tool's actual columns:
 
 ```
-GET  /import                       choose a category/template (ANY status — see below)
-GET  /import/{template}            upload form
-POST /import/{template}/upload     store file, read headers, render the mapping screen
-POST /import/{template}/preview    validate every row against the chosen mapping, show counts
-POST /import/{template}/errors     download a CSV of every row's error message
-POST /import/{template}/confirm    re-validate, then actually write certificates rows
+SL           -> always ignored (a per-file row counter, meaningless outside that file)
+Conference   -> optional per-row override of the category's own event_name
+Role         -> a normal mappable category field
+Name         -> whichever field is flagged is_recipient_name (same pattern as the live form)
+Session      -> a normal mappable category field
+Codeword     -> "Existing Codeword" -- preserved verbatim if valid+unique, else a new one is generated
+Created At   -> "Original Created Date" -- preserved as the record's created_at if parseable
+QR File      -> always ignored -- a local filesystem path from the old tool; the QR is regenerated
+                from the preserved codeword instead, never imported
 ```
 
-**Import is not restricted to Active templates** (unlike QR generation/live issuance) —
-deliberately different from Phase 5's rule. Historical Excel data routinely belongs to an
-event/category that has since been archived, and blocking import there would make migrating that
-exact data impossible. A template must still have a recipient-name field configured (checked, with
-a clear error, not a crash — a `draft` template that was never activated might genuinely have
-none yet).
-
-**State across steps, without a new database table**: the uploaded file is stored once, at
-upload time, as `storage/app/private/imports/{uuid}.xlsx` — a server-generated UUID, never a
-client-supplied path. Every subsequent step (mapping/preview/errors/confirm) carries that UUID and
-the chosen column mapping through hidden form fields and re-derives everything else (headers, rows,
-validation) fresh from the stored file — **confirm never trusts what preview merely echoed back**,
-it re-runs the exact same `CertificateImportValidator` calculation from scratch. A persistent
-`import_batches` table was considered and rejected: the whole exchange normally completes in a
-handful of requests within one admin session, and the brief explicitly said not to duplicate
-certificate storage — adding another table for transient upload state would be exactly that kind
-of unnecessary duplication for what amounts to a few hidden `<input>` fields.
-
-### Excel column mapping
-
-The mapping screen lists every Excel column (with its heading and one sample value) next to a
-`<select>` offering: **Ignore column**, every one of the template's assignable fields (the
-recipient-flagged one is just a normal option here, labeled "(Recipient Name, required)" — there
-is deliberately no separate "Recipient Name" pseudo-target; see the note in
-`App\Services\Certificates\Import\ImportMappingTarget` for why an earlier version that *did* have
-one was wrong), **Existing Codeword**, and **Existing Certificate Number**.
-
-A best-effort auto-guess pre-selects obvious matches (a header containing "name" → the recipient
-field, "codeword" → Existing Codeword, "certificate"+"number" → Existing Certificate Number, or an
-exact case-insensitive match against a field's label) — the admin reviews and can override every
-row regardless; nothing is guessed silently. No synonym dictionary was built (e.g. "Designation" →
-Role, "University" → Institution) — deliberately, to avoid guessing wrong with false confidence;
-the admin's manual review is the actual correctness guarantee, the auto-guess is only a
-convenience for the common exact-match case.
-
-`CertificateImportValidator::validateMapping()` blocks the import (returns to the mapping screen
-with a clear message) before any row is even looked at if the recipient field isn't mapped, or if
-any other *required* assignable field isn't mapped.
-
-### Row validation
-
-`CertificateImportValidator::validateRows()` is the single source of truth both the preview and
-confirm steps call — reuses `App\Services\Certificates\TemplateFieldRules` (extracted from Phase
-5's `IssueCertificateRequest` so the two entry points can never validate a field differently) for
-every mapped field's type rules, plus:
-
-- **Codeword** (if a column is mapped to it): non-empty values are checked against a permissive
-  format pattern (`[A-Za-z0-9_-]{4,128}`, chosen because the old local tool's exact codeword shape
-  isn't known — this rejects blanks/garbage without assuming the current 64-hex-character shape
-  *new* codewords get), then checked for uniqueness against **both** the database and every other
-  row already seen earlier in the same file (a duplicate can be against existing data or another
-  row in the same spreadsheet — both are reported as "Duplicate codeword"). A valid, unique,
-  non-empty value is **preserved** onto the new certificate row verbatim — the whole point of this
-  path is that old QR codes printed on paper years ago must keep working. An empty cell (column
-  mapped, but blank for that row) means "generate a new one," exactly like a certificate that never
-  had a historical codeword.
-- **Certificate number**: identical shape (format check via a looser pattern allowing the
-  slashes/dots/spaces seen in old exports, then batch+database uniqueness, then preserve-if-valid /
-  generate-if-blank).
-- Every row's real Excel row number (header = row 1) is carried through to every error message, so
-  "Row 32: Duplicate codeword" points at the exact row an admin would see if they opened the file.
-
-**Partial import, explicitly** (not all-or-nothing): the preview screen's own mockup in the brief
-(`Imported: 147 / Skipped: 3`) assumes it, and it's the only sane behavior for genuinely messy
-historical data — one malformed row in a 150-row file shouldn't block the other 149 real
-certificates. Every invalid row is skipped and reported, never imported partially or guessed at.
-
-### Import result
-
-`CertificateImportService::import()` processes each valid row in **its own transaction** (not one
-transaction for the whole file) — a batch of "147 good, 3 bad" is the expected normal case here,
-unlike Phase 5 single-issuance where any failure should produce nothing at all. One row hitting an
-extremely unlikely last-moment unique-constraint race doesn't discard every other good row around
-it; it's simply counted as skipped and its message included in the result page.
-
-The result page shows exactly the fields the brief specified: Imported, Skipped, Certificates
-created, Codewords preserved, New codewords generated, plus (not in the brief's mockup but the
-same information for certificate numbers) Certificate numbers preserved / New certificate numbers
-generated. An error-report CSV (`Row,Errors`) can be downloaded from the preview screen before
-confirming — regenerated on demand from the same stored file + mapping, not a separately persisted
-report file.
+**Import is not restricted to Active categories** — historical data routinely belongs to a category
+that's since been deactivated. **No separate "Recipient Name" mapping target** — the recipient
+field is just a normal mappable field, identified by `is_recipient_name`, exactly like the live
+generate-QR form (the advanced importer had the opposite design early on and it was a real bug —
+see docs/CHANGELOG.md's Phase 6 entries for the incident). Same state-without-a-new-table pattern
+as the advanced importer: a server-generated UUID (`storage/app/private/imports/{uuid}.xlsx`),
+never a client-supplied path, carried through hidden form fields; confirm always re-validates from
+scratch rather than trusting preview. Partial import (skip invalid rows, import the rest) is
+explicit, same reasoning as the advanced importer. Codeword/Created-At preservation follows the
+same preserve-if-valid-and-unique / generate-or-default-otherwise rule as the advanced system's
+certificate-number/codeword handling.
 
 ### Security
 
-Same two-role boundary as everything else in the certificate system (`CertificatePolicy::create()`
-— both `super_admin` and `certificate_manager`). The stored import file's UUID is validated with a
-strict UUID regex before ever touching the filesystem (`CertificateImportController::
-resolveStoredFile()`) — never a client-supplied path, closing the obvious path-traversal shape
-this kind of "carry a file reference through a form" design invites. Dynamic form/row values are
-validated server-side via the same `TemplateFieldRules` the live issuance form uses — dropdown
-values, required fields, and type rules are never trusted from the client or from the spreadsheet.
-`certificate_number`/`codeword` can never be set by an ordinary QR-generation form submission
-(`IssueCertificateRequest` rejects any unrecognized `fields.*` key) — only the Excel import path
-may explicitly preserve a *mapped* historical value, and only after the same uniqueness/format
-checks every other value goes through.
+Same two-role boundary as everywhere else (`QrCertificatePolicy`/`QrCategoryPolicy`, both
+`super_admin` and `certificate_manager`). Stored import file UUIDs are strictly regex-validated
+before touching the filesystem. Dynamic field values are validated server-side via
+`QrCategoryFieldRules`, never trusted from the client or the spreadsheet. A category's fields are
+never assumed to match another category's — every mapping/validation call is scoped to the
+specific `QrCategory` in the route.
+
+### Advanced-system isolation
+
+Nothing under `App\Services\QrTool\*`, `App\Http\Controllers\Admin\QrTool\*`, or the
+`qr_categories`/`qr_category_fields`/`qr_certificates` tables references `CertificateTemplate`,
+`TemplateField`, `Certificate`, PDF rendering, the visual designer, or template activation. Proven,
+not just asserted: `tests/Feature/Admin/QrToolGenerateTest.php` and `QrToolImportTest.php` both run
+against a database with **zero** `certificate_templates` rows and assert the tool works fully
+regardless (`test_generate_qr_works_with_zero_certificate_templates`,
+`test_import_works_with_zero_certificate_templates`). The advanced system's own routes
+(`/admin/certificates/*`, Phase 5's PDF-issuance flow), controllers, services, and tests are
+untouched by this work and remain fully functional — see §PDF generation pipeline and §Single
+certificate generation above.
+
+### Default category — matching the real old tool
+
+`Database\Seeders\QrCategorySeeder` (runs in every environment, not gated to local/testing like
+`AdminUserSeeder`, since this is real reference data the tool needs to be usable at all) creates
+"BECITHCON 2026" with `event_name = "IEEE BECITHCON 2026"` and exactly the three fields/options the
+real inspected tool has: Name (text, required, recipient), Role (dropdown, required, options
+`Session Chair`/`Invited Speaker`/`Keynote Speaker`/`Volunteer` — no "Other"), Session (long text,
+optional). Skips gracefully (with a warning, safely re-runnable) if no user exists yet to own the
+category — relevant for a fresh production deploy before the first `php artisan app:make-admin`.
+
+### Known differences from the old tool
+
+Documented explicitly, as the brief required, rather than silently diverging:
+
+1. **QR content**: the old tool encodes human-readable text with no verification step; the Laravel
+   version encodes a verification URL, per the brief's explicit Step 11 instruction. This is the
+   biggest behavioral change and is intentional — it's what makes a printed certificate's QR
+   actually checkable against a real database record.
+2. **No "Other" role / custom role**: does not exist in the real old tool; not built here despite
+   appearing as a plausible example in earlier planning. See §What the real old tool actually does.
+3. **Conference/Event is category-level, not a per-submission toggle**: the old tool lets an admin
+   include/exclude the conference name and pick its type per submission (two checkboxes + a
+   type/name dropdown pair, entirely client-side/`localStorage`-backed). The Laravel version fixes
+   `event_name` per `QrCategory` instead — matches the brief's own suggested `qr_categories` schema
+   (`event_name` as a category column) and the practical reality that, for this tool's one real
+   category, the conference name was always the same single value anyway.
+4. **Duplicate handling not reproduced**: the old tool's name+role+session soft-duplicate check
+   (reuse the existing codeword with a warning) was not built — the brief's Step 5-19 requirements
+   don't ask for it, and it would need a defined "what counts as a duplicate" rule per category
+   (the old tool only ever had one fixed field set to define it against). Can be added later if
+   real duplicate-registration problems surface.
+5. **`conference_type` is not modeled at all**: it never persisted to the old tool's Excel rows
+   either (see above) — a category's `event_name` already captures the one thing that mattered.
 
 ## Bulk (Excel) generation — a different, still-future feature (Phase 7)
 
@@ -785,35 +822,48 @@ pipeline, at bulk scale). Different input shape, different output, different pha
   (manual QR form, Excel import, Phase 5 PDF issuance) resolves to it, since all three ultimately
   go through the same `verificationUrlFor()`.
 
-## Public verification — implemented Phase 6
+## Public verification — implemented Phase 6, extended for dual sources
 
 `GET /certificate/verify/{codeword}` (route name `certificate.verify`, `routes/web.php`, public —
-no auth, not under the `admin.` prefix). See `docs/CERTIFICATE_SYSTEM.md`'s own changelog entry
-below for the full writeup; summary:
+no auth, not under the `admin.` prefix). Serves **both** independent certificate sources — the
+simple QR tool (`QrCertificate`) and the advanced system (`Certificate`, Phase 5 PDF path) —
+through one route, one controller, one DTO, without either source's creation logic knowing the
+other exists. See `docs/CERTIFICATE_SYSTEM.md`'s own changelog entries below for the full writeup;
+summary:
 
 - **Lookup**: `App\Services\Certificates\Verification\CertificateVerificationService::verify()`
-  does exactly one query, exact match: `Certificate::where('codeword', $codeword)->first()`. Never
-  certificate ID, certificate number, recipient name, or a fuzzy/partial match.
+  checks `QrCertificate::where('codeword', $codeword)->first()` first, then
+  `Certificate::where('codeword', $codeword)->first()`. Always an exact match — never certificate
+  ID, certificate number, recipient name, or a fuzzy/partial match, on either table. Each table
+  enforces its own `codeword` uniqueness independently, not against the other — see
+  §Codeword/certificate-number compatibility above for why a true cross-table constraint isn't
+  practical (it would require merging two intentionally separate tables) and why the collision risk
+  is accepted as negligible (16-char uppercase-alphanumeric vs. 64-char lowercase-hex are
+  effectively disjoint sample spaces for CSPRNG output).
 - **Route constraint**: `where('codeword', VerificationCodewordService::ACCEPTED_PATTERN)` —
-  `[A-Za-z0-9_-]{4,128}`, the exact same pattern `CertificateImportValidator` checks historical
-  codewords against and `VerificationCodewordService::generate()`'s own 64-hex-character output
-  satisfies. One shared constant, not three independent regexes that could drift. The upper bound
-  (128) exists specifically so an absurdly long junk URL 404s at the routing layer before any
-  database query or view render happens.
-- **Status rules** (`CertificateStatus`): `Active` -> Verified. `Revoked` -> a separate Revoked
-  response (certificate number only, no recipient/dynamic data, no `revocation_reason` — the
-  column/enum case already existed from Phase 2, so this display logic was built now, but no admin
-  action to actually set a certificate `revoked` was built in this phase; see §Revocation below).
-  Anything else (`Reissued`, `GenerationFailed`, or a future status) -> the same "Certificate Not
-  Verified" response as an unknown codeword — a reissued-and-superseded certificate's original
-  codeword deliberately does not claim to still be valid.
-- **Public fields**: never a blind loop over `certificates.data`'s keys. Determined by
-  `template_fields.show_on_verification` (+ `verification_label` override), resolved in a strict
-  order — see §Snapshot/current-template fallback logic below.
-- **Response object, not the model**: the controller/view never receive a `Certificate` — only
-  `App\Services\Certificates\Verification\VerificationResult`, a DTO exposing only
-  certificate-number/recipient-name/template-name/issued-date/public-fields (and only the fields
-  each outcome actually needs). `codeword`, `id`, `created_by`, `pdf_path`,
+  `[A-Za-z0-9_-]{4,128}`, one shared constant used by the route, the advanced importer's codeword
+  check, and the simple QR tool's own importer's codeword check — comfortably covers both the
+  advanced system's 64-character lowercase-hex codewords and the simple tool's 16-character
+  uppercase-alphanumeric ones (matching the real old tool's format). The upper bound (128) exists
+  specifically so an absurdly long junk URL 404s at the routing layer before any database query or
+  view render happens.
+- **Status rules**: for `Certificate` (`CertificateStatus`): `Active` -> Verified, `Revoked` -> a
+  separate Revoked response (certificate number only, no recipient/dynamic data, no
+  `revocation_reason`), anything else (`Reissued`, `GenerationFailed`) -> the same "Certificate Not
+  Verified" response as an unknown codeword. For `QrCertificate` (`QrCertificateStatus`, a smaller
+  enum with only `Active`/`Revoked`): the same Verified/Revoked split, with no third case needed.
+  Neither table's admin UI has a revoke *action* yet — only the display logic exists; see
+  §Revocation below.
+- **Public fields**: never a blind loop over `data`'s keys, on either table. For `Certificate`,
+  determined by `template_fields.show_on_verification` (+ `verification_label` override), resolved
+  in a strict order — see §Snapshot/current-template fallback logic below. For `QrCertificate`,
+  determined by the category's live `qr_category_fields.show_on_verification` — no snapshot exists
+  for this table at all, a deliberate simplification (see §No snapshot in §Simple QR tool above).
+- **Response object, not either model**: the controller/view never receive a `Certificate` or
+  `QrCertificate` — only `App\Services\Certificates\Verification\VerificationResult`, a DTO
+  exposing only certificate-number (null for a simple QR record)/recipient-name/template-name (null
+  for simple)/event-name (null for advanced)/issued-date/public-fields (and only the fields each
+  outcome actually needs). `codeword`, `id`, `created_by`, `pdf_path`,
   `template_snapshot`/`layout_snapshot` (the raw JSON), and any hidden field's value are
   structurally unreachable from the Blade view, not merely "not currently rendered."
 - All values render through Blade's default `{{ }}` escaping — no `{!! !!}` anywhere on this page.
@@ -841,10 +891,9 @@ later, neither of which is acceptable:
    was no visibility data to read from a snapshot at all). A snapshot written **before** this fix
    won't have those keys — treated as `show_on_verification = false` (hide), the safer default,
    never assumed `true`.
-2. **The live template's current fields** — Phase 6 QR-only (`SimpleCertificateService`) and
-   Excel-imported (`CertificateImportService`) certificates both always leave `template_snapshot`
-   `null` (no PDF was ever rendered for them, so there's nothing to snapshot), so this is their
-   only source. A live template can still be edited after certificates exist against it (see
+2. **The live template's current fields** — any `Certificate` whose `template_snapshot` is null for
+   any reason (no PDF was ever rendered for it, so there's nothing to snapshot) falls back to this.
+   A live template can still be edited after certificates exist against it (see
    §Template lifecycle) — for these certificates specifically, that means a later
    `show_on_verification` toggle *does* change what their public page shows. This is an accepted
    tradeoff, not an oversight: there is no PDF/snapshot to freeze for these certificates in the

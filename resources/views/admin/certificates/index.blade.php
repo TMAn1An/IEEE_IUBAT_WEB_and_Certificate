@@ -7,10 +7,7 @@
         <a href="{{ route('admin.certificates.index') }}" class="btn btn--ghost">Clear</a>
       @endif
     </form>
-    <div style="display:flex;gap:8px">
-      <a href="{{ route('admin.certificates.import.choose-template') }}" class="btn btn--ghost">Import Excel</a>
-      <a href="{{ route('admin.certificates.qr.choose-template') }}" class="btn btn--primary">Generate QR</a>
-    </div>
+    <a href="{{ route('admin.certificates.choose-template') }}" class="btn btn--primary">Issue certificate</a>
   </div>
 
   <div class="admin-card" style="padding:0">
@@ -37,7 +34,6 @@
             <td><span class="badge {{ $certificate->status->badgeClass() }}">{{ $certificate->status->label() }}</span></td>
             <td style="text-align:right;white-space:nowrap">
               <a href="{{ route('admin.certificates.show', $certificate) }}" class="btn btn--ghost btn--sm">View</a>
-              <a href="{{ route('admin.certificates.qr.image', $certificate) }}" download="{{ $certificate->certificate_number }}-qr.png" class="btn btn--ghost btn--sm">Download QR</a>
             </td>
           </tr>
         @empty
@@ -46,7 +42,7 @@
               @if ($search !== '')
                 No certificates match "{{ $search }}".
               @else
-                No certificates yet. <a href="{{ route('admin.certificates.qr.choose-template') }}">Generate the first one</a>.
+                No certificates yet. <a href="{{ route('admin.certificates.choose-template') }}">Issue the first one</a>.
               @endif
             </td>
           </tr>

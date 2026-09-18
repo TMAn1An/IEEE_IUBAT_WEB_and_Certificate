@@ -50,24 +50,16 @@
   </div>
 
   <div class="admin-card">
-    <h3 style="margin-top:0;font-size:1rem">Verification QR</h3>
-    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
-      <img id="qr-image" src="{{ route('admin.certificates.qr.image', $certificate) }}" alt="Verification QR code" width="220" height="220" style="border:1px solid var(--border);background:#fff">
-      <div style="min-width:260px">
-        <div class="field">
-          <label>Verification link</label>
-          <input type="text" id="verify-url" value="{{ $verificationUrl }}" readonly onclick="this.select()">
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-          <a href="{{ route('admin.certificates.qr.image', $certificate) }}" download="{{ $certificate->certificate_number }}-qr.png" class="btn btn--primary btn--sm">Download QR PNG</a>
-          <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy Verification Link</button>
-          <a href="{{ $verificationUrl }}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">View Public Verification</a>
-          <button type="button" class="btn btn--ghost btn--sm" id="copy-image-btn">Copy QR image</button>
-          <a href="{{ route('admin.certificates.qr.create', $certificate->template) }}" class="btn btn--ghost btn--sm">Create another</a>
-        </div>
-        <p id="copy-status" style="color:var(--muted);font-size:.85rem;margin-top:8px"></p>
-      </div>
+    <h3 style="margin-top:0;font-size:1rem">Public verification</h3>
+    <div class="field">
+      <label>Verification link</label>
+      <input type="text" id="verify-url" value="{{ $verificationUrl }}" readonly onclick="this.select()">
     </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy Verification Link</button>
+      <a href="{{ $verificationUrl }}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">View Public Verification</a>
+    </div>
+    <p id="copy-status" style="color:var(--muted);font-size:.85rem;margin-top:8px"></p>
   </div>
 
   @if ($certificate->pdf_path)
@@ -78,37 +70,14 @@
   @endif
 
   <script>
-    (function () {
+    document.getElementById('copy-link-btn').addEventListener('click', function () {
+      var url = document.getElementById('verify-url').value;
       var status = document.getElementById('copy-status');
-
-      document.getElementById('copy-link-btn').addEventListener('click', function () {
-        var url = document.getElementById('verify-url').value;
-        navigator.clipboard.writeText(url).then(function () {
-          status.textContent = 'Link copied.';
-        }).catch(function () {
-          status.textContent = 'Could not copy automatically -- select and copy the link field manually.';
-        });
+      navigator.clipboard.writeText(url).then(function () {
+        status.textContent = 'Link copied.';
+      }).catch(function () {
+        status.textContent = 'Could not copy automatically -- select and copy the link field manually.';
       });
-
-      // Optional convenience (PNG download above is the guaranteed path).
-      var copyImageBtn = document.getElementById('copy-image-btn');
-      if (!navigator.clipboard || !window.ClipboardItem) {
-        copyImageBtn.style.display = 'none';
-      } else {
-        copyImageBtn.addEventListener('click', function () {
-          fetch(document.getElementById('qr-image').src)
-            .then(function (r) { return r.blob(); })
-            .then(function (blob) {
-              return navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-            })
-            .then(function () {
-              status.textContent = 'QR image copied to clipboard.';
-            })
-            .catch(function () {
-              status.textContent = 'Could not copy the image -- use Download QR PNG instead.';
-            });
-        });
-      }
-    })();
+    });
   </script>
 </x-layouts.admin>

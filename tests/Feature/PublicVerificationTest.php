@@ -4,26 +4,31 @@ namespace Tests\Feature;
 
 use App\Enums\CertificateStatus;
 use App\Enums\CertificateTemplateStatus;
+use App\Enums\QrCertificateStatus;
 use App\Models\Certificate;
 use App\Models\CertificateTemplate;
+use App\Models\QrCategory;
+use App\Models\QrCategoryField;
+use App\Models\QrCertificate;
 use App\Models\TemplateField;
 use App\Models\User;
 use App\Services\Certificates\CertificateSnapshotService;
-use App\Services\Certificates\Import\CertificateImportService;
-use App\Services\Certificates\Import\CertificateImportValidator;
-use App\Services\Certificates\Import\ImportRowResult;
 use App\Services\Certificates\Pdf\PdfPageBox;
 use App\Services\Certificates\QrCodeService;
-use App\Services\Certificates\SimpleCertificateService;
+use App\Services\QrTool\Import\QrCategoryImportService;
+use App\Services\QrTool\Import\QrCategoryImportValidator;
+use App\Services\QrTool\QrCertificateIssuanceService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
 /**
- * Phase 6 (public verification) required tests -- see docs/CHANGELOG.md.
- * Covers all three certificate-creation paths (QR-only, Excel-imported,
- * Phase 5 PDF-path) resolving through the same public
- * GET /certificate/verify/{codeword} route.
+ * Public verification tests -- covers all three certificate-creation paths
+ * resolving through the same public GET /certificate/verify/{codeword}
+ * route: the independent simple QR tool (QrCertificate, manual generation
+ * and Excel import) and the advanced system (Certificate, Phase 5 PDF
+ * path). See docs/CERTIFICATE_SYSTEM.md §Public verification and §Simple
+ * QR tool.
  */
 class PublicVerificationTest extends TestCase
 {
@@ -63,6 +68,26 @@ class PublicVerificationTest extends TestCase
         return $template->fresh(['fields']);
     }
 
+    private function qrCategoryWithFields(User $creator): QrCategory
+    {
+        $category = QrCategory::factory()->for($creator, 'creator')->create(['event_name' => 'IEEE BECITHCON 2026']);
+
+        QrCategoryField::factory()->for($category, 'category')->create([
+            'key' => 'recipient_name', 'label' => 'Name', 'type' => 'text',
+            'required' => true, 'is_recipient_name' => true, 'show_on_verification' => true,
+        ]);
+        QrCategoryField::factory()->for($category, 'category')->create([
+            'key' => 'role', 'label' => 'Role', 'type' => 'text',
+            'required' => true, 'show_on_verification' => true,
+        ]);
+        QrCategoryField::factory()->for($category, 'category')->create([
+            'key' => 'session', 'label' => 'Session', 'type' => 'long_text',
+            'required' => false, 'show_on_verification' => true,
+        ]);
+
+        return $category->fresh(['fields']);
+    }
+
     private function verifyUrl(string $codeword): string
     {
         return "/certificate/verify/{$codeword}";
@@ -70,11 +95,7 @@ class PublicVerificationTest extends TestCase
 
     public function test_route_requires_no_login(): void
     {
-        $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
-        $certificate = app(SimpleCertificateService::class)->issue($template, [
-            'recipient_name' => 'Jane Doe', 'role' => 'Speaker', 'email' => 'jane@example.com',
-        ], $manager);
+        $certificate = Certificate::factory()->create();
 
         // No actingAs() anywhere in this test -- a genuinely guest request.
         $this->get($this->verifyUrl($certificate->codeword))
@@ -82,53 +103,39 @@ class PublicVerificationTest extends TestCase
             ->assertDontSee('/admin/login');
     }
 
-    public function test_valid_manual_qr_certificate_verifies(): void
+    public function test_valid_simple_qr_certificate_verifies(): void
     {
         $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
-        $certificate = app(SimpleCertificateService::class)->issue($template, [
-            'recipient_name' => 'Jane Doe', 'role' => 'Speaker', 'email' => 'jane@example.com',
+        $category = $this->qrCategoryWithFields($manager);
+
+        $certificate = app(QrCertificateIssuanceService::class)->issue($category, [
+            'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
 
         $response = $this->get($this->verifyUrl($certificate->codeword));
 
         $response->assertOk()
             ->assertSee('Certificate Verified')
-            ->assertSee($certificate->certificate_number)
             ->assertSee('Jane Doe')
-            ->assertSee('Speaker');
+            ->assertSee('Volunteer')
+            ->assertSee('IEEE BECITHCON 2026');
     }
 
-    public function test_valid_excel_imported_certificate_verifies_with_preserved_codeword(): void
+    public function test_valid_excel_imported_qr_certificate_verifies_with_preserved_codeword(): void
     {
         $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
+        $category = $this->qrCategoryWithFields($manager);
 
-        $rows = [['Jane Import', 'Speaker', '']];
-        $mapping = [0 => 'recipient_name', 1 => 'role'];
-        $validator = app(CertificateImportValidator::class);
-        $validated = $validator->validateRows($template, ['Name', 'Role', 'Email'], $rows, $mapping);
+        $rows = [['Jane Import', 'Volunteer', 'Track A']];
+        $mapping = [0 => 'recipient_name', 1 => 'role', 2 => 'session'];
+        $validated = app(QrCategoryImportValidator::class)->validateRows($category, $rows, $mapping);
 
-        // Simulate a preserved historical codeword directly (import HTTP flow
-        // is covered by tests/Feature/Admin/CertificateExcelImportTest.php;
-        // this test is about verification, not re-testing the importer).
-        $row = $validated[0];
-        $preserved = new ImportRowResult(
-            rowNumber: $row->rowNumber,
-            errors: [],
-            recipientName: $row->recipientName,
-            fieldValues: $row->fieldValues,
-            codeword: 'legacycode123',
-            certificateNumber: null,
-        );
+        app(QrCategoryImportService::class)->import($category, $validated, $manager);
+        $certificate = QrCertificate::where('recipient_name', 'Jane Import')->firstOrFail();
 
-        app(CertificateImportService::class)->import($template, [$preserved], $manager);
-        $certificate = Certificate::where('codeword', 'legacycode123')->firstOrFail();
-
-        $this->get($this->verifyUrl('legacycode123'))
+        $this->get($this->verifyUrl($certificate->codeword))
             ->assertOk()
             ->assertSee('Certificate Verified')
-            ->assertSee($certificate->certificate_number)
             ->assertSee('Jane Import');
     }
 
@@ -157,37 +164,40 @@ class PublicVerificationTest extends TestCase
             ->assertDontSee('certificates/2026/fake-uuid.pdf');
     }
 
-    public function test_public_and_hidden_dynamic_fields(): void
+    public function test_public_and_hidden_dynamic_fields_for_simple_qr(): void
     {
         $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
-        $certificate = app(SimpleCertificateService::class)->issue($template, [
-            'recipient_name' => 'Jane Doe', 'role' => 'Speaker', 'email' => 'secret@example.com',
+        $category = $this->qrCategoryWithFields($manager);
+        QrCategoryField::factory()->for($category, 'category')->create([
+            'key' => 'email', 'label' => 'Email', 'type' => 'text',
+            'required' => false, 'show_on_verification' => false,
+        ]);
+
+        $certificate = app(QrCertificateIssuanceService::class)->issue($category, [
+            'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A', 'email' => 'secret@example.com',
         ], $manager);
 
         $response = $this->get($this->verifyUrl($certificate->codeword));
 
-        $response->assertSee('Speaker')->assertDontSee('secret@example.com');
+        $response->assertSee('Volunteer')->assertDontSee('secret@example.com');
     }
 
     public function test_raw_json_and_internal_fields_never_displayed(): void
     {
         $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
-        $certificate = app(SimpleCertificateService::class)->issue($template, [
-            'recipient_name' => 'Jane Doe', 'role' => 'Speaker', 'email' => 'secret@example.com',
+        $category = $this->qrCategoryWithFields($manager);
+        $certificate = app(QrCertificateIssuanceService::class)->issue($category, [
+            'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
 
         $response = $this->get($this->verifyUrl($certificate->codeword));
         $content = $response->getContent();
 
         $this->assertStringNotContainsString($certificate->codeword, $content);
-        // Not a plain digit check (e.g. the id itself) -- any short numeric
-        // substring coincidentally appears in dates/etc. ("2026" contains
-        // "6"). The DTO passed to the view (VerificationResult) has no id
-        // field at all, so leaking it isn't just untested, it's structurally
-        // impossible -- see App\Services\Certificates\Verification\
-        // VerificationResult's docblock.
+        // The DTO passed to the view (VerificationResult) has no id field
+        // at all, so leaking the raw numeric id isn't just untested, it's
+        // structurally impossible -- see App\Services\Certificates\
+        // Verification\VerificationResult's docblock.
         $this->assertStringNotContainsString('field_key', $content);
         $this->assertStringNotContainsString('"role":', $content);
     }
@@ -204,9 +214,9 @@ class PublicVerificationTest extends TestCase
     public function test_not_verified_result_leaks_no_recipient_information(): void
     {
         $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
-        app(SimpleCertificateService::class)->issue($template, [
-            'recipient_name' => 'Should Not Appear', 'role' => 'Speaker', 'email' => 'x@example.com',
+        $category = $this->qrCategoryWithFields($manager);
+        app(QrCertificateIssuanceService::class)->issue($category, [
+            'recipient_name' => 'Should Not Appear', 'role' => 'Volunteer', 'session' => 'Track A',
         ], $manager);
 
         $response = $this->get($this->verifyUrl(str_repeat('b', 64)));
@@ -242,19 +252,34 @@ class PublicVerificationTest extends TestCase
             ->assertDontSee('Certificate Verified');
     }
 
-    public function test_qr_service_url_resolves_to_the_verification_route(): void
+    public function test_revoked_simple_qr_certificate_is_not_shown_as_verified(): void
+    {
+        $certificate = QrCertificate::factory()->create(['status' => QrCertificateStatus::Revoked]);
+
+        $response = $this->get($this->verifyUrl($certificate->codeword));
+
+        $response->assertOk()
+            ->assertSee('Certificate Revoked')
+            ->assertDontSee('Certificate Verified')
+            ->assertDontSee($certificate->recipient_name);
+    }
+
+    public function test_qr_service_url_resolves_to_the_verification_route_for_both_sources(): void
     {
         $manager = User::factory()->create();
-        $template = $this->templateWithFields($manager);
-        $certificate = app(SimpleCertificateService::class)->issue($template, [
-            'recipient_name' => 'Jane Doe', 'role' => 'Speaker', 'email' => 'x@example.com',
-        ], $manager);
 
+        $certificate = Certificate::factory()->create();
         $url = app(QrCodeService::class)->verificationUrlFor($certificate);
-        $path = parse_url($url, PHP_URL_PATH);
+        $this->assertSame("/certificate/verify/{$certificate->codeword}", parse_url($url, PHP_URL_PATH));
+        $this->get(parse_url($url, PHP_URL_PATH))->assertOk()->assertSee('Certificate Verified');
 
-        $this->assertSame("/certificate/verify/{$certificate->codeword}", $path);
-        $this->get($path)->assertOk()->assertSee('Certificate Verified');
+        $category = $this->qrCategoryWithFields($manager);
+        $qrCertificate = app(QrCertificateIssuanceService::class)->issue($category, [
+            'recipient_name' => 'Jane Doe', 'role' => 'Volunteer', 'session' => 'Track A',
+        ], $manager);
+        $qrUrl = app(QrCodeService::class)->verificationUrlForCodeword($qrCertificate->codeword);
+        $this->assertSame("/certificate/verify/{$qrCertificate->codeword}", parse_url($qrUrl, PHP_URL_PATH));
+        $this->get(parse_url($qrUrl, PHP_URL_PATH))->assertOk()->assertSee('Certificate Verified');
     }
 
     public function test_noindex_header_and_meta_tag_present(): void

@@ -3,15 +3,15 @@
 MySQL/MariaDB, via Laravel migrations only — never hand-created in phpMyAdmin except the database
 and database user themselves (`docs/DEPLOYMENT_CPANEL.md`).
 
-**Status**: the schema below is implemented as of Phase 5 (`database/migrations/`) — **Phase 6
-needed zero schema changes**. `pdf_path`/`template_snapshot`/`layout_snapshot` were already
-`nullable()` (added that way in Phase 5, for exactly this kind of future flexibility), which
-turned out to be exactly what Phase 6's PDF-less "generate a codeword + QR" certificates and
-Excel-imported certificates needed — both simply leave all three `null`. Columns/tables marked
-*(later phase)* are intentionally not built yet — each phase stays scoped to what it actually
-needs, kept lean rather than pre-building columns for features that don't exist yet (bulk
-generation, verification logging). Add them in the phase that actually needs them, and update this
-doc alongside that migration.
+**Status**: implemented through Phase 6. Two genuinely independent schema groups now exist side by
+side: the **advanced system** (`certificate_templates`/`template_fields`/`certificate_batches`/
+`certificates`, Phase 2-5, PDF-path, paused as the primary workflow) and the **simple QR tool**
+(`qr_categories`/`qr_category_fields`/`qr_certificates`, Phase 6, rebuilt after inspecting the real
+reference tool at `IEEEQRCODEGENERATOR-main/` — see `docs/CERTIFICATE_SYSTEM.md` §Simple QR tool).
+Neither group has a foreign key into the other — that's deliberate, not an oversight; see that doc
+section for the full reasoning. Columns/tables marked *(later phase)* are intentionally not built
+yet — each phase stays scoped to what it actually needs. Add them in the phase that actually needs
+them, and update this doc alongside that migration.
 
 ## Entity overview
 
@@ -21,16 +21,19 @@ certificate_templates ──< template_fields
 certificate_templates ──< certificate_batches
 certificate_templates ──< certificates >── certificate_batches
 certificates ── (self-referencing) reissued_from_id
+
+qr_categories ──< qr_category_fields
+qr_categories ──< qr_certificates
 ```
 
-`verification_logs` and `audit_logs` are deliberately not created yet — see
-`docs/CERTIFICATE_SYSTEM.md`. Public verification itself (`GET /certificate/verify/{codeword}`)
-shipped in Phase 6 without a hit/miss log table; it reads `certificates` directly (exact `codeword`
-match) and needs no schema of its own. There is no `events` table; the public site's event content
-stays in
+The two groups above share nothing but `users` (via `created_by`, both `restrictOnDelete`) and the
+public verification route, which checks both tables by exact `codeword` match — see
+`docs/CERTIFICATE_SYSTEM.md` §Public verification. `verification_logs` and `audit_logs` are
+deliberately not created yet. There is no `events` table; the public site's event content stays in
 `config/site.php` (see `docs/ARCHITECTURE.md`). `certificate_number_counters` (Phase 5, below) is a
 small standalone table, not part of this relationship diagram — nothing references it by foreign
-key, it's only ever read/written by `CertificateNumberService`.
+key, it's only ever read/written by `CertificateNumberService` (the advanced system's certificate
+numbers only — the simple QR tool has no certificate-number concept at all).
 
 ## `users`
 
@@ -163,6 +166,68 @@ lock is what makes certificate-number generation race-condition safe under concu
 plain `COUNT(certificates) + 1` has nothing to lock against. See
 `docs/CERTIFICATE_SYSTEM.md` §Certificate number generation.
 
+## `qr_categories`
+
+The simple QR tool's category system — Phase 6, fully independent of `certificate_templates` (no
+foreign key either direction). See `docs/CERTIFICATE_SYSTEM.md` §Simple QR tool.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | bigint PK | |
+| name | string | e.g. "BECITHCON 2026" |
+| slug | string, unique | |
+| event_name | string, nullable | the old tool's "Conference/Event" value, e.g. "IEEE BECITHCON 2026" — fixed per category rather than a per-submission toggle (a deliberate simplification from the real old tool; see docs/CERTIFICATE_SYSTEM.md §Known differences) |
+| description | text, nullable | |
+| is_active | boolean, default `true` | a plain toggle — no draft/active/archived lifecycle, no activation-validation gate like `certificate_templates.status` |
+| created_by | FK -> `users.id`, `restrictOnDelete` | |
+| created_at / updated_at | timestamps | |
+
+Indexed: `is_active`.
+
+## `qr_category_fields`
+
+| Column | Type | Notes |
+|---|---|---|
+| id | bigint PK | |
+| qr_category_id | FK -> `qr_categories.id`, `cascadeOnDelete` | |
+| label | string | |
+| key | string | snake_case, unique **per category** — mirrors `template_fields.field_key` |
+| type | string, cast to `App\Enums\QrCategoryFieldType` (`text`, `long_text`, `number`, `date`, `dropdown`) | smaller than `TemplateFieldType` — no `certificate_number`/`qr_code` system-field cases, since this tool has no PDF/layout concept for them to describe |
+| required | boolean, default `true` | |
+| options | JSON, nullable, cast `array` | dropdown choices |
+| sort_order | unsigned int, default `0` | |
+| is_recipient_name | boolean, default `false` | same "at most one per category" rule as the advanced system, enforced in `App\Services\QrTool\QrCategoryFieldService`, not a DB constraint |
+| show_on_verification | boolean, default `true` | drives the public verification page — read from the LIVE row at verification time, always (no snapshot exists for this table; see below) |
+| created_at / updated_at | timestamps | |
+
+Unique constraint: (`qr_category_id`, `key`). No `position`/`style` JSON columns — there is no PDF
+placement concept anywhere in this tool.
+
+## `qr_certificates`
+
+The simple QR tool's own record table — Phase 6, deliberately NOT the advanced system's
+`certificates` table (whose `certificate_template_id` is a required, `restrictOnDelete` foreign
+key that would have forced every simple record to depend on `CertificateTemplate`).
+
+| Column | Type | Notes |
+|---|---|---|
+| id | bigint PK | |
+| qr_category_id | FK -> `qr_categories.id`, `restrictOnDelete` | |
+| recipient_name | string | copied from whichever field is flagged `is_recipient_name`, same pattern as the advanced system |
+| event_name | string, nullable | denormalized from the category at creation time (or an imported row's own preserved value) — frozen per record without needing a full snapshot system |
+| data | JSON, cast `array` | `key => value` for every category field, dynamic per category |
+| codeword | string, **unique** | 16 characters, uppercase A-Z/0-9 — matches the real old tool's format exactly (`secrets.choice(string.ascii_uppercase + string.digits)` × 16 in the original Python), generated by `App\Services\QrTool\QrToolCodewordService` using PHP's CSPRNG. A deliberately different shape from the advanced system's 64-character lowercase-hex codeword — both are accepted by the same public verification route without any special-casing (`VerificationCodewordService::ACCEPTED_PATTERN` already covers both) |
+| status | string, cast to `App\Enums\QrCertificateStatus` (`active`, `revoked`), default `active` | smaller than `CertificateStatus` — no `reissued`/`generation_failed`, neither concept exists in this tool |
+| created_by | FK -> `users.id`, `restrictOnDelete` | |
+| created_at / updated_at | timestamps | `created_at` is explicitly overridable on Excel import, to preserve a historical row's original "Created At" value from the old tool's Excel export |
+
+Indexed: unique(`codeword`), `status`. No `certificate_number` column — the old tool never had one
+("SL" was a per-Excel-file row counter, not a portable identifier). No `pdf_path`,
+`template_snapshot`, or `layout_snapshot` — no PDF is ever rendered, and (unlike the advanced
+system) this table does not snapshot field definitions at issuance at all; public field visibility
+is always resolved from the category's live fields. See `docs/CERTIFICATE_SYSTEM.md` §No snapshot
+for the reasoning.
+
 ## Enums (`App\Enums\*`)
 
 Every `status`/`role`/`field_type` column is a plain `string` at the database level, cast to a PHP
@@ -176,6 +241,8 @@ autocompletion + a `label()` method for display text in one place.
 - `TemplateFieldType`: `Text`, `LongText`, `Number`, `Date`, `Dropdown`, `CertificateNumber`, `QrCode`
 - `CertificateBatchStatus`: `Pending`, `Processing`, `Completed`, `Partial`, `Failed`
 - `CertificateStatus`: `Active`, `Revoked`, `Reissued`, `GenerationFailed`
+- `QrCategoryFieldType`: `Text`, `LongText`, `Number`, `Date`, `Dropdown` (simple QR tool)
+- `QrCertificateStatus`: `Active`, `Revoked` (simple QR tool)
 
 ## Not built yet (deliberately, kept lean phase by phase)
 

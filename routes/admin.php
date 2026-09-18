@@ -2,10 +2,13 @@
 
 use App\Http\Controllers\Admin\AuthController;
 use App\Http\Controllers\Admin\CertificateController;
-use App\Http\Controllers\Admin\CertificateImportController;
-use App\Http\Controllers\Admin\CertificateQrController;
 use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
+use App\Http\Controllers\Admin\QrTool\QrCategoryController;
+use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
+use App\Http\Controllers\Admin\QrTool\QrGenerateController;
+use App\Http\Controllers\Admin\QrTool\QrImportController;
+use App\Http\Controllers\Admin\QrTool\QrRecordsController;
 use App\Http\Controllers\Admin\TemplateController;
 use App\Http\Controllers\Admin\TemplateDesignerController;
 use App\Http\Controllers\Admin\TemplateFieldController;
@@ -63,37 +66,56 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::post('/templates/{template}/fields/{field}/move-up', [TemplateFieldController::class, 'moveUp'])->name('templates.fields.move-up');
     Route::post('/templates/{template}/fields/{field}/move-down', [TemplateFieldController::class, 'moveDown'])->name('templates.fields.move-down');
 
-    // Single-certificate issuance (Phase 5, PDF-designer path — paused, not
-    // removed; see docs/CERTIFICATE_SYSTEM.md §Simplified QR workflow). No
-    // 'edit'/'destroy' -- issued certificates are immutable (§Snapshot
-    // strategy); revoke/reissue are Phase 8. Literal-segment routes
-    // (/issue, /generate-qr, /import) must come before /{certificate} so
-    // they aren't swallowed by the model-bound route.
+    // Single-certificate issuance (Phase 5, PDF-designer path — advanced/
+    // future, paused, not removed; see docs/CERTIFICATE_SYSTEM.md §Simple
+    // QR tool for the isolation boundary). No 'edit'/'destroy' -- issued
+    // certificates are immutable (§Snapshot strategy); revoke/reissue are
+    // Phase 8.
     Route::get('/certificates', [CertificateController::class, 'index'])->name('certificates.index');
     Route::get('/certificates/issue', [CertificateController::class, 'chooseTemplate'])->name('certificates.choose-template');
     Route::get('/certificates/issue/{template}', [CertificateController::class, 'create'])->name('certificates.create');
     Route::post('/certificates/issue/{template}', [CertificateController::class, 'store'])->name('certificates.store');
-
-    // Phase 6 — the simplified, primary workflow: dynamic form -> DB row +
-    // codeword + on-demand QR, no PDF. See docs/CERTIFICATE_SYSTEM.md
-    // §Simplified QR workflow.
-    Route::get('/certificates/generate-qr', [CertificateQrController::class, 'chooseTemplate'])->name('certificates.qr.choose-template');
-    Route::get('/certificates/generate-qr/{template}', [CertificateQrController::class, 'create'])->name('certificates.qr.create');
-    Route::post('/certificates/generate-qr/{template}', [CertificateQrController::class, 'store'])->name('certificates.qr.store');
-    Route::get('/certificates/{certificate}/qr.png', [CertificateQrController::class, 'qrImage'])->name('certificates.qr.image');
-
-    // Phase 6 — historical Excel import with column mapping. Each step
-    // resubmits the stored file's UUID (never a client-supplied path) plus
-    // the chosen mapping; see docs/CERTIFICATE_SYSTEM.md §Excel import.
-    Route::get('/certificates/import', [CertificateImportController::class, 'chooseTemplate'])->name('certificates.import.choose-template');
-    Route::get('/certificates/import/{template}', [CertificateImportController::class, 'showUpload'])->name('certificates.import.upload');
-    Route::post('/certificates/import/{template}/upload', [CertificateImportController::class, 'handleUpload'])->name('certificates.import.upload.store');
-    Route::post('/certificates/import/{template}/preview', [CertificateImportController::class, 'preview'])->name('certificates.import.preview');
-    Route::post('/certificates/import/{template}/errors', [CertificateImportController::class, 'errorReport'])->name('certificates.import.errors');
-    Route::post('/certificates/import/{template}/confirm', [CertificateImportController::class, 'confirm'])->name('certificates.import.confirm');
-
     Route::get('/certificates/{certificate}', [CertificateController::class, 'show'])->name('certificates.show');
     Route::get('/certificates/{certificate}/download', [CertificateController::class, 'download'])->name('certificates.download');
+
+    // The simple QR tool — fully independent of CertificateTemplate/the PDF
+    // designer/activation lifecycle. See docs/CERTIFICATE_SYSTEM.md §Simple
+    // QR tool. Literal-segment routes (/generate, /records, /import,
+    // /categories) live under their own prefix specifically so they never
+    // collide with or get swallowed by the advanced /certificates/*
+    // model-bound routes above.
+    Route::prefix('qr-tool')->name('qr.')->group(function () {
+        Route::get('/generate', [QrGenerateController::class, 'chooseCategory'])->name('generate.choose-category');
+        Route::get('/generate/{category}', [QrGenerateController::class, 'create'])->name('generate.create');
+        Route::post('/generate/{category}', [QrGenerateController::class, 'store'])->name('generate.store');
+
+        Route::get('/records', [QrRecordsController::class, 'index'])->name('records.index');
+        Route::get('/records/{certificate}', [QrRecordsController::class, 'show'])->name('records.show');
+        Route::get('/records/{certificate}/qr.png', [QrGenerateController::class, 'qrImage'])->name('records.qr-image');
+
+        Route::get('/import', [QrImportController::class, 'chooseCategory'])->name('import.choose-category');
+        Route::get('/import/{category}', [QrImportController::class, 'showUpload'])->name('import.upload');
+        Route::post('/import/{category}/upload', [QrImportController::class, 'handleUpload'])->name('import.upload.store');
+        Route::post('/import/{category}/preview', [QrImportController::class, 'preview'])->name('import.preview');
+        Route::post('/import/{category}/errors', [QrImportController::class, 'errorReport'])->name('import.errors');
+        Route::post('/import/{category}/confirm', [QrImportController::class, 'confirm'])->name('import.confirm');
+
+        Route::get('/categories', [QrCategoryController::class, 'index'])->name('categories.index');
+        Route::get('/categories/create', [QrCategoryController::class, 'create'])->name('categories.create');
+        Route::post('/categories', [QrCategoryController::class, 'store'])->name('categories.store');
+        Route::get('/categories/{category}/edit', [QrCategoryController::class, 'edit'])->name('categories.edit');
+        Route::patch('/categories/{category}', [QrCategoryController::class, 'update'])->name('categories.update');
+        Route::post('/categories/{category}/activate', [QrCategoryController::class, 'activate'])->name('categories.activate');
+        Route::post('/categories/{category}/deactivate', [QrCategoryController::class, 'deactivate'])->name('categories.deactivate');
+
+        Route::get('/categories/{category}/fields/create', [QrCategoryFieldController::class, 'create'])->name('categories.fields.create');
+        Route::post('/categories/{category}/fields', [QrCategoryFieldController::class, 'store'])->name('categories.fields.store');
+        Route::get('/categories/{category}/fields/{field}/edit', [QrCategoryFieldController::class, 'edit'])->name('categories.fields.edit');
+        Route::patch('/categories/{category}/fields/{field}', [QrCategoryFieldController::class, 'update'])->name('categories.fields.update');
+        Route::delete('/categories/{category}/fields/{field}', [QrCategoryFieldController::class, 'destroy'])->name('categories.fields.destroy');
+        Route::post('/categories/{category}/fields/{field}/move-up', [QrCategoryFieldController::class, 'moveUp'])->name('categories.fields.move-up');
+        Route::post('/categories/{category}/fields/{field}/move-down', [QrCategoryFieldController::class, 'moveDown'])->name('categories.fields.move-down');
+    });
 
     // Functionality lands in later phases (see docs/MIGRATION_PLAN.md's
     // phase list). Real nav entries now, honest "not built yet" pages

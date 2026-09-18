@@ -12,7 +12,10 @@ use Tests\TestCase;
  * failure there fails the whole run), so this makes the check explicit
  * rather than only implicit. Extended in Phase 3 with `is_recipient_name`,
  * Phase 4 with background metadata + system-element layout columns, Phase 5
- * with generated-PDF/snapshot columns and the certificate number counter.
+ * with generated-PDF/snapshot columns and the certificate number counter,
+ * and with the simple QR tool's own independent tables (qr_categories,
+ * qr_category_fields, qr_certificates — see docs/CERTIFICATE_SYSTEM.md
+ * §Simple QR tool for why these are separate from certificate_templates).
  */
 class DatabaseSchemaTest extends TestCase
 {
@@ -49,5 +52,27 @@ class DatabaseSchemaTest extends TestCase
 
         $this->assertTrue(Schema::hasTable('certificate_number_counters'));
         $this->assertTrue(Schema::hasColumns('certificate_number_counters', ['year', 'next_sequence']));
+
+        $this->assertTrue(Schema::hasTable('qr_categories'));
+        $this->assertTrue(Schema::hasColumns('qr_categories', [
+            'name', 'slug', 'event_name', 'description', 'is_active', 'created_by',
+        ]));
+        // No column on qr_categories may reference certificate_templates --
+        // this table is deliberately fully independent of the advanced
+        // system (see docs/CERTIFICATE_SYSTEM.md §Simple QR tool).
+        $this->assertFalse(Schema::hasColumn('qr_categories', 'certificate_template_id'));
+
+        $this->assertTrue(Schema::hasTable('qr_category_fields'));
+        $this->assertTrue(Schema::hasColumns('qr_category_fields', [
+            'qr_category_id', 'label', 'key', 'type', 'required', 'options',
+            'sort_order', 'is_recipient_name', 'show_on_verification',
+        ]));
+
+        $this->assertTrue(Schema::hasTable('qr_certificates'));
+        $this->assertTrue(Schema::hasColumns('qr_certificates', [
+            'qr_category_id', 'recipient_name', 'event_name', 'data', 'codeword', 'status', 'created_by',
+        ]));
+        $this->assertFalse(Schema::hasColumn('qr_certificates', 'certificate_template_id'));
+        $this->assertFalse(Schema::hasColumn('qr_certificates', 'pdf_path'));
     }
 }

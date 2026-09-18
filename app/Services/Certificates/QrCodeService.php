@@ -23,18 +23,26 @@ use TCPDF2DBarcode;
 class QrCodeService
 {
     /**
-     * The single URL-building implementation every caller uses (the QR
-     * PNG/in-PDF drawing here, the admin certificate detail page's copy
-     * link, and the manual QA phone-scan flow) — never build this string
-     * any other way. Uses Laravel's own `route()` helper against the public
-     * `certificate.verify` route (routes/web.php), so it always resolves
-     * against the real `APP_URL` and can never drift from the route it's
-     * meant to match. See docs/CERTIFICATE_SYSTEM.md §QR generator
-     * integration.
+     * The single URL-building implementation every caller uses — the
+     * advanced system's QR PNG/in-PDF drawing and admin copy-link, AND
+     * (via `verificationUrlForCodeword()` below) the independent simple QR
+     * tool's equivalents. This class knows nothing about either domain
+     * model beyond a bare codeword string, which is exactly why it's safe
+     * to share between the two otherwise-decoupled systems — see
+     * docs/CERTIFICATE_SYSTEM.md §Simple QR tool for the isolation
+     * boundary this class deliberately sits outside of. Uses Laravel's own
+     * `route()` helper against the public `certificate.verify` route
+     * (routes/web.php), so it always resolves against the real `APP_URL`
+     * and can never drift from the route it's meant to match.
      */
     public function verificationUrlFor(Certificate $certificate): string
     {
-        return route('certificate.verify', ['codeword' => $certificate->codeword]);
+        return $this->verificationUrlForCodeword($certificate->codeword);
+    }
+
+    public function verificationUrlForCodeword(string $codeword): string
+    {
+        return route('certificate.verify', ['codeword' => $codeword]);
     }
 
     /** @param  array{x: float, y: float, width: float, height: float}  $tcpdfBox  Already converted — see PdfCoordinateConverter. */

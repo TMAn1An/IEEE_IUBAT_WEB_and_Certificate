@@ -51,18 +51,28 @@
           </div>
           <div class="verify-details">
             <dl>
-              <div class="verify-row">
-                <dt>Certificate Number</dt>
-                <dd>{{ $result->certificateNumber }}</dd>
-              </div>
+              @if ($result->certificateNumber)
+                <div class="verify-row">
+                  <dt>Certificate Number</dt>
+                  <dd>{{ $result->certificateNumber }}</dd>
+                </div>
+              @endif
               <div class="verify-row">
                 <dt>Recipient</dt>
                 <dd>{{ $result->recipientName }}</dd>
               </div>
-              <div class="verify-row">
-                <dt>Certificate</dt>
-                <dd>{{ $result->templateName }}</dd>
-              </div>
+              @if ($result->templateName)
+                <div class="verify-row">
+                  <dt>Certificate</dt>
+                  <dd>{{ $result->templateName }}</dd>
+                </div>
+              @endif
+              @if ($result->eventName)
+                <div class="verify-row">
+                  <dt>Conference/Event</dt>
+                  <dd>{{ $result->eventName }}</dd>
+                </div>
+              @endif
               @foreach ($result->publicFields as $field)
                 <div class="verify-row">
                   <dt>{{ $field->label }}</dt>
@@ -86,12 +96,14 @@
             <h1>&#9888; Certificate Revoked</h1>
           </div>
           <div class="verify-details">
-            <dl>
-              <div class="verify-row">
-                <dt>Certificate Number</dt>
-                <dd>{{ $result->certificateNumber }}</dd>
-              </div>
-            </dl>
+            @if ($result->certificateNumber)
+              <dl>
+                <div class="verify-row">
+                  <dt>Certificate Number</dt>
+                  <dd>{{ $result->certificateNumber }}</dd>
+                </div>
+              </dl>
+            @endif
             <p>This certificate was previously issued but is no longer considered valid by {{ config('site.site.name') }}.</p>
           </div>
           @break

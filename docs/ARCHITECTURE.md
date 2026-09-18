@@ -18,7 +18,11 @@ hosting without extra moving parts (no separate services, no Docker, no Node ser
 **Status**: reflects what's actually built through Phase 6. Items still marked as planned (not yet
 created) are for Phase 7 onward — see `docs/CHANGELOG.md` for what landed in which phase. The
 Phase 4/5 PDF-designer files below are still present and still tested — Phase 6 paused that
-workflow, it didn't remove it (see `docs/CERTIFICATE_SYSTEM.md` §Simplified QR workflow).
+workflow, it didn't remove it (see `docs/CERTIFICATE_SYSTEM.md` §Simple QR tool). The simple QR
+tool itself was rebuilt once, mid-Phase-6, after inspecting the real reference tool
+(`IEEEQRCODEGENERATOR-main/`) — the listing below reflects that rebuilt version; an earlier
+`CertificateQrController`/`CertificateImportController`/`SimpleCertificateService` design that
+incorrectly depended on `CertificateTemplate` was deleted, not kept as dead code.
 
 ```
 app/
@@ -37,10 +41,13 @@ app/
         TemplateDesignerController.php # designer view + save-layout (Phase 4)
         CertificateController.php  # single-certificate issuance (PDF path, Phase 5, paused): choose
                                      # template, dynamic form, list/search, detail, PDF download
-        CertificateQrController.php # Phase 6, primary workflow: dynamic form -> DB row + codeword +
-                                      # on-demand QR PNG, no PDF
-        CertificateImportController.php # Phase 6: historical Excel import (upload -> map -> preview
-                                          # -> confirm), see docs/CERTIFICATE_SYSTEM.md §Excel import
+        QrTool/                    # Phase 6 (rebuilt) — the simple QR tool, fully independent of
+                                     # CertificateTemplate; see docs/CERTIFICATE_SYSTEM.md §Simple QR tool
+          QrGenerateController.php       # primary workflow: dynamic form -> DB row + codeword + QR
+          QrRecordsController.php        # list/search/detail for qr_certificates
+          QrImportController.php         # historical Excel import (old tool's real headings)
+          QrCategoryController.php       # category CRUD (name/event_name/is_active, no PDF/layout)
+          QrCategoryFieldController.php  # field CRUD + move-up/move-down within a category
         # planned: BatchController (Phase 7)
       VerificationController.php   # Phase 6 — public GET /certificate/verify/{codeword}. Lives at
                                      # App\Http\Controllers, NOT App\Http\Controllers\Admin -- this
@@ -57,10 +64,14 @@ app/
         SaveTemplateLayoutRequest.php                 # Phase 4 — the designer's full save payload
         IssueCertificateRequest.php                   # Phase 5 — rules built dynamically from the
                                                         # selected template's fields; rejects
-                                                        # unknown field keys; reused as-is by the
-                                                        # Phase 6 QR-generation route too
-        UploadCertificateImportRequest.php            # Phase 6 — mimes:xlsx + size check for the
-                                                        # Excel import upload step
+                                                        # unknown field keys (advanced PDF path only)
+        GenerateQrRequest.php                         # Phase 6 — the simple QR tool's own dynamic
+                                                        # request, mirrors but doesn't share code with
+                                                        # IssueCertificateRequest, per the isolation rule
+        UploadQrImportRequest.php                     # Phase 6 — mimes:xlsx + size check for the
+                                                        # simple QR tool's Excel import upload step
+        StoreQrCategoryRequest.php, UpdateQrCategoryRequest.php             # Phase 6
+        StoreQrCategoryFieldRequest.php, UpdateQrCategoryFieldRequest.php   # Phase 6
         # planned: UploadBatchRequest, etc. (Phase 7)
   Policies/
     UserPolicy.php                 # Super-Admin-only user management, auto-discovered (Phase 2)
@@ -68,6 +79,7 @@ app/
                                      # ability added Phase 4 — blocks layout writes once archived
     CertificatePolicy.php          # both admin roles, auto-discovered (Phase 5) — viewAny/view/
                                      # create/download; no revoke/reissue ability yet (Phase 8)
+    QrCategoryPolicy.php, QrCertificatePolicy.php   # Phase 6 — same two-role boundary, auto-discovered
   Enums/
     UserRole.php, CertificateTemplateStatus.php, TemplateFieldType.php,
     CertificateBatchStatus.php, CertificateStatus.php    # Phase 2 — see docs/DATABASE_DESIGN.md
@@ -75,6 +87,8 @@ app/
     # see docs/CERTIFICATE_SYSTEM.md §System fields vs. input fields
     # CertificateStatus::GenerationFailed added Phase 5 — schema-readiness only, never written by
     # the current synchronous issuance flow (see docs/CERTIFICATE_SYSTEM.md §Failure handling)
+    QrCategoryFieldType.php    # Phase 6 — text/long_text/number/date/dropdown only, no PDF-related cases
+    QrCertificateStatus.php    # Phase 6 — Active/Revoked only, no Reissued/GenerationFailed
   Console/Commands/
     MakeAdminCommand.php           # `php artisan app:make-admin` — first production Super Admin (Phase 2)
   Models/
@@ -83,6 +97,8 @@ app/
     TemplateField.php              # is_recipient_name cast added Phase 3
     CertificateBatch.php
     Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5
+    QrCategory.php, QrCategoryField.php, QrCertificate.php   # Phase 6 — the simple QR tool's own
+                                                               # models, no FK to any of the above
     # planned: VerificationLog, AuditLog (still future -- public verification itself shipped
     # Phase 6 without a hit/miss log model; see docs/CERTIFICATE_SYSTEM.md §Public verification)
   Services/
@@ -93,41 +109,59 @@ app/
       TemplateBackgroundService.php # PDF upload/replace storage (Phase 4)
       TemplateLayoutService.php     # save-layout transaction: page size, fields, system elements,
                                      # QR-squareness enforcement, IDOR re-check (Phase 4)
-    Certificates/                # Phase 5 (PDF path, paused) + Phase 6 (simplified path, primary)
+    Certificates/                # Phase 5 (PDF path, paused/advanced) -- see also QrTool/ below
+                                   # (Phase 6, simple/primary), a fully separate sibling namespace
       CertificateIssuanceService.php    # Phase 5 — orchestrates PDF issuance in one DB transaction;
                                           # write-PDF-then-insert-then-cleanup-on-failure ordering
-      SimpleCertificateService.php      # Phase 6 — the no-PDF issuance path: number + codeword +
-                                          # DB row only, shares both sub-services below with Phase 5
       CertificateNumberService.php      # atomic, race-safe sequential certificate numbers
       VerificationCodewordService.php   # CSPRNG codeword generation (CLAUDE.md's "verification
-                                          # token", reusing the existing `codeword` column)
-      CertificateSnapshotService.php    # builds template_snapshot/layout_snapshot at issuance
-                                          # (Phase 5 path only — Phase 6 certificates have both null)
-      TemplateFieldRules.php            # Phase 6 — extracted from IssueCertificateRequest so the
-                                          # live form and the Excel importer validate a field
-                                          # identically; single source of truth for both
-      QrCodeService.php                 # verification URL + draws the QR via TCPDF's native
-                                          # write2DBarcode() (Phase 5, in-PDF) and pngBytes() via
-                                          # TCPDF2DBarcode::getBarcodePngData() (Phase 6, standalone
-                                          # PNG) — no new QR package either way
+                                          # token", reusing the existing `codeword` column).
+                                          # ACCEPTED_PATTERN is shared with the simple QR tool and
+                                          # the public verification route — see
+                                          # docs/CERTIFICATE_SYSTEM.md §Codeword compatibility
+      CertificateSnapshotService.php    # builds template_snapshot/layout_snapshot at issuance;
+                                          # extended Phase 6 to also capture show_on_verification/
+                                          # verification_label per field (a real gap, fixed)
+      TemplateFieldRules.php            # rule-builder for IssueCertificateRequest — advanced/PDF
+                                          # path only (the simple QR tool has its own equivalent,
+                                          # QrTool\QrCategoryFieldRules, deliberately not shared)
+      QrCodeService.php                 # SHARED with the simple QR tool (see QrTool/ below) --
+                                          # verification URL + draws the QR via TCPDF's native
+                                          # write2DBarcode() (in-PDF) and pngBytes() via
+                                          # TCPDF2DBarcode::getBarcodePngData() (standalone PNG) —
+                                          # no new QR package either way. Knows nothing about either
+                                          # domain model beyond a bare codeword string, which is why
+                                          # it's safe to share across the isolation boundary
       IssuanceResult.php                # DTO: certificate + any field-overflow warnings (Phase 5)
-      Import/                      # Phase 6 — historical Excel import
-        ExcelFileReader.php             # reads a .xlsx's headers + rows via PhpSpreadsheet
-        ImportMappingTarget.php         # the non-field mapping targets (codeword, certificate
-                                          # number, ignore) — see docs/CERTIFICATE_SYSTEM.md
-                                          # §Excel column mapping for why there's no separate
-                                          # "recipient name" target
-        CertificateImportValidator.php  # single source of truth for mapping + per-row validation,
-                                          # called identically by the preview and confirm steps
-        CertificateImportService.php    # writes valid rows to the database, one transaction per
-                                          # row (partial import is intentional here)
-        ImportRowResult.php, ImportValidationResult.php, ImportSummary.php   # DTOs
-      Verification/                # Phase 6 — public verification
-        CertificateVerificationService.php  # the one place the public route looks anything up;
-                                              # exact codeword match, then resolves status +
-                                              # public-field visibility (snapshot -> live template
-                                              # -> nothing) — see docs/CERTIFICATE_SYSTEM.md
+      Import/
+        ExcelFileReader.php             # SHARED with the simple QR tool -- reads a .xlsx's headers
+                                          # + rows via PhpSpreadsheet, no schema assumptions at all
+      Verification/                # public verification -- serves BOTH sources
+        CertificateVerificationService.php  # the one place the public route looks anything up:
+                                              # QrCertificate first, then Certificate, each an exact
+                                              # codeword match, then resolves status + public-field
+                                              # visibility per source — see docs/CERTIFICATE_SYSTEM.md
                                               # §Snapshot/current-template fallback logic
+        VerificationResult.php, VerificationOutcome.php, PublicField.php   # DTOs (dual-source shape)
+    QrTool/                      # Phase 6 (rebuilt) — the simple QR tool, fully independent of
+                                   # the Certificates/ namespace above except QrCodeService and
+                                   # Import/ExcelFileReader (both genuinely generic — see above)
+      QrToolCodewordService.php         # 16-char uppercase-alphanumeric CSPRNG codewords, matching
+                                          # the real old tool's format exactly (see
+                                          # docs/CERTIFICATE_SYSTEM.md §Codeword format compatibility)
+      QrCategoryFieldRules.php          # rule-builder mirroring TemplateFieldRules, not shared
+      QrCategoryService.php             # slug generation only — no activation-validation gate
+      QrCategoryFieldService.php        # field-key rules, recipient exclusivity, reordering —
+                                          # mirrors TemplateFieldService, not shared
+      QrCertificateIssuanceService.php  # the no-PDF issuance path: codeword + DB row only
+      Import/
+        QrImportMappingTarget.php       # codeword/event-name-override/created-at/ignore targets —
+                                          # no separate "recipient name" target, same reasoning as
+                                          # the advanced importer's identical fix (see changelog)
+        QrCategoryImportValidator.php   # single source of truth for mapping + per-row validation
+        QrCategoryImportService.php     # writes valid rows to qr_certificates, one transaction per
+                                          # row (partial import is intentional)
+        QrImportRowResult.php, QrImportSummary.php   # DTOs
         VerificationResult.php              # DTO the view actually receives -- NOT the Certificate
                                               # model, so codeword/id/pdf_path/template_snapshot/
                                               # data etc. are structurally unreachable from the
@@ -169,9 +203,12 @@ resources/
       templates/fields/ (create, edit, and a shared _form.blade.php partial both include) — Phase 3
       templates/designer.blade.php # the visual canvas editor (Phase 4) — see docs/CERTIFICATE_SYSTEM.md
       certificates/
-        index, choose-template, issue, show   # Phase 5 (PDF path, paused) — see docs/CERTIFICATE_SYSTEM.md
-        qr/ (choose-template, create)         # Phase 6, primary workflow
-        import/ (choose-template, upload, mapping, preview, result)   # Phase 6
+        index, choose-template, issue, show   # Phase 5 (PDF path, paused/advanced) — see docs/CERTIFICATE_SYSTEM.md
+      qr-tool/                     # Phase 6 (rebuilt), primary workflow — fully independent of certificates/ above
+        generate/ (choose-category, create)
+        records/ (index, show)
+        import/ (choose-category, upload, mapping, preview, result)
+        categories/ (index, create, edit, fields/create, fields/edit, fields/_form.blade.php)
       # planned: batches/ (Phase 7)
     verify/
       show.blade.php   # Phase 6 — ONE view, all three outcomes (verified/revoked/not-found)
@@ -248,12 +285,14 @@ layout using Vite-built assets + Alpine.js.
 
 ## 4. Certificate system data flow
 
-**Note**: this diagram is the original pre-implementation sketch from Phase 0/2 and predates the
-real class names — kept for the high-level flow, which is still accurate, but see
+**Note**: this diagram describes the ADVANCED (Phase 5, PDF-path) system only, and predates the
+real class names — kept for the high-level flow, which is still accurate for that system, but see
 `docs/CERTIFICATE_SYSTEM.md` for what each phase actually built (e.g. `CertificateGenerationService`
-below became `CertificateIssuanceService` + `SimpleCertificateService`; `CertificateNumberGenerator`/
-`CodewordGenerator` became `CertificateNumberService`/`VerificationCodewordService`). The
-Verification block specifically has been corrected below to match the real Phase 6 implementation.
+below became `CertificateIssuanceService`; `CertificateNumberGenerator`/`CodewordGenerator` became
+`CertificateNumberService`/`VerificationCodewordService`). The simple QR tool (Phase 6, the primary
+admin workflow) is a separate, independent system not depicted here at all — see
+docs/CERTIFICATE_SYSTEM.md §Simple QR tool for its own data flow. The Verification block below has
+been corrected to match the real implementation, which serves both systems.
 
 ```
 Template PDF (Canva export)
@@ -288,16 +327,20 @@ Bulk certificates:
    -> ZIP of generated PDFs assembled for download, cleaned up by a scheduled command after a
       configured retention window (see docs/DEPLOYMENT_CPANEL.md §Cron)
 
-Verification (implemented Phase 6, real behavior -- see docs/CERTIFICATE_SYSTEM.md §Public verification):
+Verification (implemented Phase 6, serves BOTH systems -- see docs/CERTIFICATE_SYSTEM.md §Public verification):
    GET /certificate/verify/{codeword}  (public, routes/web.php, throttle:60,1)
-   -> CertificateVerificationService::verify(): Certificate::where('codeword', $codeword)->first()
-   -> not found, OR status is anything other than active/revoked (e.g. reissued) ->
-      "Certificate Not Verified" (no data leaked)
-   -> status=revoked -> "Certificate Revoked" (certificate number only, no personal/dynamic data)
-   -> status=active -> "Certificate Verified": certificate_number, recipient_name, template name,
-      issued_at, plus dynamic fields where show_on_verification=true (source: template_snapshot
-      if present, else the live template's current fields -- see §Snapshot/current-template
-      fallback logic). View receives a VerificationResult DTO, never the Certificate model.
+   -> CertificateVerificationService::verify():
+        QrCertificate::where('codeword', $codeword)->first()   -- checked FIRST
+        else Certificate::where('codeword', $codeword)->first()
+   -> not found on either table, OR an advanced Certificate's status is anything other than
+      active/revoked (e.g. reissued) -> "Certificate Not Verified" (no data leaked)
+   -> status=revoked (either table) -> "Certificate Revoked" (no personal/dynamic data)
+   -> status=active (either table) -> "Certificate Verified": recipient_name, issued/created date,
+      plus dynamic fields where show_on_verification=true. Advanced: certificate_number + template
+      name, fields from template_snapshot if present else the live template (see
+      §Snapshot/current-template fallback logic). Simple QR: event_name instead of a certificate
+      number, fields always from the category's LIVE fields (no snapshot concept -- see §No
+      snapshot). View receives a VerificationResult DTO either way, never either model directly.
    -> no VerificationLog / hit-miss audit table was built (still future work, out of scope for
       "public verification" specifically)
 ```
