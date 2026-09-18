@@ -50,7 +50,7 @@
           <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy Verification Link</button>
           <a href="{{ $verificationUrl }}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">View Verification</a>
           <button type="button" class="btn btn--ghost btn--sm" id="copy-image-btn">Copy QR image</button>
-          <a href="{{ route('admin.qr.generate.create', $certificate->category) }}" class="btn btn--ghost btn--sm">Create another</a>
+          <a href="{{ route('admin.qr.generate.show') }}" class="btn btn--ghost btn--sm">Create another</a>
         </div>
         <p id="copy-status" style="color:var(--muted);font-size:.85rem;margin-top:8px"></p>
       </div>

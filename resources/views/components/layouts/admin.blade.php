@@ -19,7 +19,7 @@
     <ul class="admin-nav">
       <li><a href="{{ route('admin.dashboard') }}" class="{{ request()->routeIs('admin.dashboard') ? 'is-active' : '' }}">Dashboard</a></li>
       <li class="admin-nav__heading">Certificate QR Tool</li>
-      <li><a href="{{ route('admin.qr.generate.choose-category') }}" class="{{ request()->routeIs('admin.qr.generate.*') ? 'is-active' : '' }}">Generate QR</a></li>
+      <li><a href="{{ route('admin.qr.generate.show') }}" class="{{ request()->routeIs('admin.qr.generate.*') ? 'is-active' : '' }}">Generate QR</a></li>
       <li><a href="{{ route('admin.qr.records.index') }}" class="{{ request()->routeIs('admin.qr.records.*') ? 'is-active' : '' }}">Records</a></li>
       <li><a href="{{ route('admin.qr.import.choose-category') }}" class="{{ request()->routeIs('admin.qr.import.*') ? 'is-active' : '' }}">Import Excel</a></li>
       <li><a href="{{ route('admin.qr.categories.index') }}" class="{{ request()->routeIs('admin.qr.categories.*') ? 'is-active' : '' }}">QR Categories</a></li>

@@ -41,12 +41,21 @@ app/
         TemplateDesignerController.php # designer view + save-layout (Phase 4)
         CertificateController.php  # single-certificate issuance (PDF path, Phase 5, paused): choose
                                      # template, dynamic form, list/search, detail, PDF download
-        QrTool/                    # Phase 6 (rebuilt) — the simple QR tool, fully independent of
-                                     # CertificateTemplate; see docs/CERTIFICATE_SYSTEM.md §Simple QR tool
-          QrGenerateController.php       # primary workflow: dynamic form -> DB row + codeword + QR
-          QrRecordsController.php        # list/search/detail for qr_certificates
+        QrTool/                    # Phase 6 (rebuilt twice — see docs/CERTIFICATE_SYSTEM.md
+                                     # §Simple QR tool: old-tool-parity rebuild) — the simple QR
+                                     # tool, fully independent of CertificateTemplate
+          QrGenerateController.php       # THE old-tool-parity page: GET/POST /admin/qr-tool/generate,
+                                          # one screen, no {category} param -- bound to config('qr-tool.
+                                          # primary_category_slug'). Also QR PNG + Download Excel.
+          QrOptionsController.php        # small JSON endpoints for the old tool's "Add role option"/
+                                          # "Add type option"/"Add conference name" buttons, persisted
+                                          # server-side instead of localStorage
+          QrRecordsController.php        # full searchable list/detail for qr_certificates (secondary
+                                          # to the main page's own inline "Recent Entries")
           QrImportController.php         # historical Excel import (old tool's real headings)
-          QrCategoryController.php       # category CRUD (name/event_name/is_active, no PDF/layout)
+          QrCategoryController.php       # multi-category CRUD (name/event_name/is_active, no PDF/
+                                          # layout) -- exists for future categories; the main page
+                                          # doesn't expose picking one, per explicit instruction
           QrCategoryFieldController.php  # field CRUD + move-up/move-down within a category
         # planned: BatchController (Phase 7)
       VerificationController.php   # Phase 6 — public GET /certificate/verify/{codeword}. Lives at
@@ -65,9 +74,11 @@ app/
         IssueCertificateRequest.php                   # Phase 5 — rules built dynamically from the
                                                         # selected template's fields; rejects
                                                         # unknown field keys (advanced PDF path only)
-        GenerateQrRequest.php                         # Phase 6 — the simple QR tool's own dynamic
-                                                        # request, mirrors but doesn't share code with
-                                                        # IssueCertificateRequest, per the isolation rule
+        GenerateQrRequest.php                         # Phase 6 -- field names match the old tool's
+                                                        # own form exactly (role_select, conference_type,
+                                                        # conference_select, include_conference, name,
+                                                        # include_session, session), not the generic
+                                                        # fields[{key}] shape used elsewhere
         UploadQrImportRequest.php                     # Phase 6 — mimes:xlsx + size check for the
                                                         # simple QR tool's Excel import upload step
         StoreQrCategoryRequest.php, UpdateQrCategoryRequest.php             # Phase 6
@@ -99,6 +110,8 @@ app/
     Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5
     QrCategory.php, QrCategoryField.php, QrCertificate.php   # Phase 6 — the simple QR tool's own
                                                                # models, no FK to any of the above
+    QrConferenceType.php, QrConferenceOption.php   # Phase 6 -- persisted role/conference option
+                                                     # lists, replacing the old tool's localStorage
     # planned: VerificationLog, AuditLog (still future -- public verification itself shipped
     # Phase 6 without a hit/miss log model; see docs/CERTIFICATE_SYSTEM.md §Public verification)
   Services/
@@ -150,10 +163,16 @@ app/
                                           # the real old tool's format exactly (see
                                           # docs/CERTIFICATE_SYSTEM.md §Codeword format compatibility)
       QrCategoryFieldRules.php          # rule-builder mirroring TemplateFieldRules, not shared
-      QrCategoryService.php             # slug generation only — no activation-validation gate
-      QrCategoryFieldService.php        # field-key rules, recipient exclusivity, reordering —
-                                          # mirrors TemplateFieldService, not shared
-      QrCertificateIssuanceService.php  # the no-PDF issuance path: codeword + DB row only
+      QrCategoryService.php             # slug generation + primary() -- resolves the one category
+                                          # the old-tool-parity page targets (config('qr-tool.
+                                          # primary_category_slug')); no activation-validation gate
+      QrCategoryFieldService.php        # field-key rules, recipient exclusivity, reordering, PLUS
+                                          # addOption()/removeOption() for the old tool's "Add/Remove
+                                          # role option" buttons — mirrors TemplateFieldService, not shared
+      QrConferenceOptionService.php     # addType()/removeType()/addOption()/removeOption() for the
+                                          # old tool's conference type/name add-remove buttons
+      QrCertificateIssuanceService.php  # the no-PDF issuance path: codeword + DB row, PLUS
+                                          # findDuplicate() reproducing the old tool's record_exists()
       Import/
         QrImportMappingTarget.php       # codeword/event-name-override/created-at/ignore targets —
                                           # no separate "recipient name" target, same reasoning as
@@ -204,9 +223,12 @@ resources/
       templates/designer.blade.php # the visual canvas editor (Phase 4) — see docs/CERTIFICATE_SYSTEM.md
       certificates/
         index, choose-template, issue, show   # Phase 5 (PDF path, paused/advanced) — see docs/CERTIFICATE_SYSTEM.md
-      qr-tool/                     # Phase 6 (rebuilt), primary workflow — fully independent of certificates/ above
-        generate/ (choose-category, create)
-        records/ (index, show)
+      qr-tool/                     # Phase 6, primary workflow — fully independent of certificates/ above
+        tool.blade.php             # THE old-tool-parity page -- Create Entry + Generated Result +
+                                     # Recent Entries, all in one file, recreating
+                                     # IEEEQRCODEGENERATOR-main/templates/index.html's actual layout
+        records/ (index, show)     # the full searchable list (secondary to tool.blade.php's own
+                                     # inline "Recent Entries")
         import/ (choose-category, upload, mapping, preview, result)
         categories/ (index, create, edit, fields/create, fields/edit, fields/_form.blade.php)
       # planned: batches/ (Phase 7)
@@ -224,6 +246,12 @@ public/
   js/admin/template-designer.js # vanilla JS: PDF.js render, drag/resize, coordinate conversion,
                                   # settings panel, sample preview data (Phase 4) — no build step,
                                   # matching the rest of the admin UI (see §5)
+  js/admin/qr-tool.js           # vanilla JS adapted from the old tool's own inline script -- same
+                                  # function names/behavior, role/conference add-remove now hit
+                                  # small JSON endpoints instead of localStorage
+  css/qr-tool.css               # vendored BYTE-FOR-BYTE from IEEEQRCODEGENERATOR-main/static/css/
+                                  # style.css for visual parity -- deliberately not merged into
+                                  # admin.css's theme
   index.php                    # Laravel front controller (only publicly reachable PHP entry point)
 
 resources/

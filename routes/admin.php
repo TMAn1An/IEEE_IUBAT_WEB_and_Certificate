@@ -8,6 +8,7 @@ use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
 use App\Http\Controllers\Admin\QrTool\QrImportController;
+use App\Http\Controllers\Admin\QrTool\QrOptionsController;
 use App\Http\Controllers\Admin\QrTool\QrRecordsController;
 use App\Http\Controllers\Admin\TemplateController;
 use App\Http\Controllers\Admin\TemplateDesignerController;
@@ -85,9 +86,23 @@ Route::middleware(['auth', 'active'])->group(function () {
     // collide with or get swallowed by the advanced /certificates/*
     // model-bound routes above.
     Route::prefix('qr-tool')->name('qr.')->group(function () {
-        Route::get('/generate', [QrGenerateController::class, 'chooseCategory'])->name('generate.choose-category');
-        Route::get('/generate/{category}', [QrGenerateController::class, 'create'])->name('generate.create');
-        Route::post('/generate/{category}', [QrGenerateController::class, 'store'])->name('generate.store');
+        // The old-tool-parity page -- one screen, bound to a single fixed
+        // category (config('qr-tool.primary_category_slug')), not a
+        // category the admin picks. See docs/CERTIFICATE_SYSTEM.md §Simple
+        // QR tool: old-tool-parity rebuild.
+        Route::get('/generate', [QrGenerateController::class, 'show'])->name('generate.show');
+        Route::post('/generate', [QrGenerateController::class, 'store'])->name('generate.store');
+        Route::get('/generate/export.xlsx', [QrGenerateController::class, 'downloadExcel'])->name('generate.download-excel');
+
+        // Persists the old tool's "Add role option"/"Add type option"/
+        // "Add conference name" buttons server-side instead of in
+        // localStorage -- small JSON endpoints, no page reload.
+        Route::post('/options/roles/add', [QrOptionsController::class, 'addRole'])->name('options.roles.add');
+        Route::post('/options/roles/remove', [QrOptionsController::class, 'removeRole'])->name('options.roles.remove');
+        Route::post('/options/conference-types/add', [QrOptionsController::class, 'addConferenceType'])->name('options.conference-types.add');
+        Route::post('/options/conference-types/remove', [QrOptionsController::class, 'removeConferenceType'])->name('options.conference-types.remove');
+        Route::post('/options/conference-options/add', [QrOptionsController::class, 'addConferenceOption'])->name('options.conference-options.add');
+        Route::post('/options/conference-options/remove', [QrOptionsController::class, 'removeConferenceOption'])->name('options.conference-options.remove');
 
         Route::get('/records', [QrRecordsController::class, 'index'])->name('records.index');
         Route::get('/records/{certificate}', [QrRecordsController::class, 'show'])->name('records.show');

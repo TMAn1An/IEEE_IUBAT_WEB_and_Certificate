@@ -14,6 +14,20 @@ use Illuminate\Support\Str;
  */
 class QrCategoryService
 {
+    /**
+     * The one category the old-tool-parity page (`/admin/qr-tool/generate`)
+     * targets — see config/qr-tool.php. Null if it doesn't exist yet
+     * (e.g. before `QrCategorySeeder` has run), which the controller turns
+     * into an honest "not configured yet" message rather than a crash.
+     */
+    public function primary(): ?QrCategory
+    {
+        return QrCategory::query()
+            ->where('slug', config('qr-tool.primary_category_slug'))
+            ->with('fields')
+            ->first();
+    }
+
     /** A unique, URL-safe slug derived from $name, appending -2, -3, ... on collision. */
     public function generateUniqueSlug(string $name, ?int $ignoreCategoryId = null): string
     {

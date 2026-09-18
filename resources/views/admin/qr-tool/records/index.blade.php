@@ -9,7 +9,7 @@
     </form>
     <div style="display:flex;gap:8px">
       <a href="{{ route('admin.qr.import.choose-category') }}" class="btn btn--ghost">Import Excel</a>
-      <a href="{{ route('admin.qr.generate.choose-category') }}" class="btn btn--primary">Generate QR</a>
+      <a href="{{ route('admin.qr.generate.show') }}" class="btn btn--primary">Generate QR</a>
     </div>
   </div>
 
@@ -46,7 +46,7 @@
               @if ($search !== '')
                 No records match "{{ $search }}".
               @else
-                No records yet. <a href="{{ route('admin.qr.generate.choose-category') }}">Generate the first one</a>.
+                No records yet. <a href="{{ route('admin.qr.generate.show') }}">Generate the first one</a>.
               @endif
             </td>
           </tr>

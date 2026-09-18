@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\QrCategory;
 use App\Models\QrCategoryField;
+use App\Models\QrConferenceType;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 
@@ -15,17 +16,17 @@ use Illuminate\Database\Seeder;
  *
  * Real findings that shaped this seeder:
  * - The old tool has exactly ONE form/category (BECITHCON 2026), not
- *   several. CONFERENCE_OPTIONS = ["IEEE BECITHCON 2026"].
+ *   several. CONFERENCE_OPTIONS = ["IEEE BECITHCON 2026"] (under type
+ *   "Conference"), EVENT_OPTIONS = ["BECITHCON 2026"] (under type "Event").
  * - PRESET_ROLES = ["Session Chair", "Invited Speaker", "Keynote Speaker",
  *   "Volunteer"] -- there is NO "Other" option and no custom-role text
  *   field anywhere in the real code, despite that being a plausible-looking
  *   example in an earlier planning draft. Not implemented here because it
  *   doesn't reflect the actual tool.
- * - Conference/Session were both optional per-submission checkboxes in the
- *   old tool; simplified here to a fixed category-level `event_name` (no
- *   per-record toggle) and an optional Session field respectively -- see
- *   docs/CERTIFICATE_SYSTEM.md for the full reasoning on both
- *   simplifications.
+ * - Conference and Session are both optional per-submission (checkboxes in
+ *   the old UI, preserved here as-is: an optional Session field, and a
+ *   conference type+name pair chosen live from `qr_conference_types`/
+ *   `qr_conference_options` rather than a fixed category default).
  *
  * Runs in every environment (not gated to local/testing like
  * AdminUserSeeder) -- unlike dev admin credentials, this is real reference
@@ -93,6 +94,14 @@ class QrCategorySeeder extends Seeder
                 'show_on_verification' => true,
             ]
         );
+
+        // The real defaultConferenceTypes/CONFERENCE_OPTIONS/EVENT_OPTIONS
+        // from the old tool's index.html + app.py.
+        $conferenceType = QrConferenceType::query()->firstOrCreate(['name' => 'Conference']);
+        $conferenceType->options()->firstOrCreate(['name' => 'IEEE BECITHCON 2026']);
+
+        $eventType = QrConferenceType::query()->firstOrCreate(['name' => 'Event']);
+        $eventType->options()->firstOrCreate(['name' => 'BECITHCON 2026']);
 
         $this->command?->info('Seeded the BECITHCON 2026 QR category (matching the real old tool).');
     }

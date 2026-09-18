@@ -717,3 +717,68 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   for the dual-source lookup. `docs/ARCHITECTURE.md` and `docs/DATABASE_DESIGN.md` updated with the
   new independent schema/services/controllers/views and corrected stale references to the deleted
   classes.
+
+## Phase 6 (rebuilt again) — old-tool-parity single page (2026-09-18)
+
+- **Why rebuilt a second time**: the previous rebuild's Generate QR flow was itself still a
+  redesign — a category-picker → dynamic-form → separate-result-page admin workflow — which the
+  next instruction explicitly ruled out ("Do NOT create a new category-driven workflow... keep the
+  old tool looking and behaving almost exactly as it does now"). `Admin\QrTool\
+  QrGenerateController` is now one page, `GET/POST /admin/qr-tool/generate`, with no `{category}`
+  route parameter, recreating `IEEEQRCODEGENERATOR-main/templates/index.html`'s actual Create
+  Entry / Generated Result / Recent Entries layout, plus its exact CSS vendored byte-for-byte to
+  `public/css/qr-tool.css`. Bound to one fixed category via
+  `config('qr-tool.primary_category_slug')` — the multi-category CRUD from the prior rebuild still
+  exists at `/admin/qr-tool/categories` for future use, it's just not what this page is built
+  around.
+- **Two reversed simplifications, explained rather than silently changed**: (1) conference/event
+  is chosen live per submission again (checkbox + type/name dropdown pair), backed by two new
+  small tables (`qr_conference_types`, `qr_conference_options`) instead of a fixed
+  `qr_categories.event_name` column — reverting the previous rebuild's fix-it-per-category
+  simplification. (2) The old tool's name+role+session duplicate-reuse check
+  (`record_exists()`) is now reproduced (`QrCertificateIssuanceService::findDuplicate()`), with one
+  small, explained improvement: showing the matched record's full QR/details rather than only a
+  text-mentioned codeword, since the new instruction's literal wording asked for that.
+- **Persisted option lists**: the old tool's "Add role option"/"Add type option"/"Add conference
+  name" buttons previously lived only in that one browser's `localStorage`. Role options now live
+  on the seeded category's own `options` JSON (`QrCategoryFieldService::addOption()`/
+  `removeOption()`); conference type/name options live in the two new tables
+  (`QrConferenceOptionService`). Three small JSON endpoints
+  (`Admin\QrTool\QrOptionsController`, `/admin/qr-tool/options/*`) back a `fetch()`-based vanilla
+  JS UI (`public/js/admin/qr-tool.js`, adapted from the old tool's own inline script) that updates
+  the relevant `<select>` without a full page reload — same instant-feeling UX as the old tool,
+  now shared across every admin instead of one browser. Removing an option never touches
+  historical records (no foreign key from `qr_certificates` to either option list) — verified by a
+  dedicated test.
+- **No redirect after POST**, matching the old tool's own Flask handler (`render_template()`
+  directly in the POST route, no redirect) — `store()` returns the same view with `$result`
+  populated. A page refresh after generating can resubmit in both tools; mitigated the same way
+  the old tool didn't even attempt, a client-side submit-button disable.
+- **Download Excel** (`GET /admin/qr-tool/generate/export.xlsx`) exports current database rows
+  using the exact old headings, shown in the topbar only when a result is present — matching the
+  old tool's own `{% if result %}` conditional exactly. `QR File` is always blank (no file exists
+  to reference; the QR is generated on demand from the codeword).
+- **Not reproduced**: the old tool's `localStorage`-based "remember my last form values" JS
+  convenience — minor, not explicitly requested, skipped to keep scope tight.
+- **Tests**: `tests/Feature/Admin/QrToolGenerateTest.php` rewritten entirely for the new single-page
+  routes/field names (14 tests: zero-CertificateTemplate independence, required-field validation,
+  DB storage, session checkbox behavior, codeword format/uniqueness, verification-URL
+  round-trip, duplicate reuse, role/conference-option add-persist, role-remove-doesn't-alter-
+  history, unauthorized access, recent entries from DB, Excel export, advanced-system
+  untouched). The multi-category CRUD coverage the old version of this file had was preserved,
+  moved into a new `tests/Feature/Admin/QrToolCategoryManagementTest.php` (2 tests). 89 tests pass
+  total, 397 assertions, no regressions (confirmed via a fresh migration + seed).
+- **Pint**: clean, 153 files (1 pre-existing unused-import issue auto-fixed in the new test file).
+- **Manual QA**: exercised via real HTTP requests (curl, with a genuine login session) against a
+  live local server — loaded the page, submitted a full generation (conference+role+name+session),
+  confirmed the exact codeword format and the public verification page's output, added a role
+  option and a conference type via the JSON endpoints and confirmed persistence in the database,
+  resubmitted the identical name+role+session and confirmed the existing record/codeword was
+  reused with zero new rows created, and downloaded a real `.xlsx` export. No real browser/phone
+  side-by-side comparison with the old tool was performed — see the completion report for what
+  remains for the user's own manual QA.
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md`'s §Generate QR workflow replaced with the old-tool-parity
+  version; new §Persisted option lists, §Duplicate handling, and §Excel export subsections added;
+  §Known differences from the old tool updated to reflect the two reversed simplifications.
+  `docs/ARCHITECTURE.md` and `docs/DATABASE_DESIGN.md` updated with the two new tables/models/
+  services/views and the new `config/qr-tool.php`.

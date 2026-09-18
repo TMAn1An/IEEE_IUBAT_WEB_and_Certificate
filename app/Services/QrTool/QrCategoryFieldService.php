@@ -93,4 +93,48 @@ class QrCategoryFieldService
             ->when($except, fn ($query) => $query->where('id', '!=', $except))
             ->update(['is_recipient_name' => false]);
     }
+
+    /**
+     * Persists what the old tool's "Add role option" button kept only in
+     * `localStorage` — see docs/CERTIFICATE_SYSTEM.md §Simple QR tool:
+     * old-tool-parity rebuild. Case-insensitive duplicate check, matching
+     * the old tool's own JS (`options.some(o => o.toLowerCase() ===
+     * value.toLowerCase())`).
+     *
+     * @return list<string> the field's updated option list
+     */
+    public function addOption(QrCategoryField $field, string $value): array
+    {
+        $value = trim($value);
+        $options = collect($field->options ?? []);
+
+        if ($value !== '' && ! $options->contains(fn ($o) => strcasecmp($o, $value) === 0)) {
+            $options->push($value);
+            $field->update(['options' => $options->values()->all()]);
+        }
+
+        return $field->options ?? [];
+    }
+
+    /**
+     * Removes a role option for FUTURE generation only — never touches an
+     * already-created `qr_certificates` row, which stores the role as a
+     * plain string value inside its own `data` JSON with no foreign key
+     * back to this option list at all. Matches the old tool's own
+     * behavior exactly (its options list was never anything more than a
+     * dropdown's choices to begin with).
+     *
+     * @return list<string> the field's updated option list
+     */
+    public function removeOption(QrCategoryField $field, string $value): array
+    {
+        $options = collect($field->options ?? [])
+            ->reject(fn ($o) => strcasecmp($o, $value) === 0)
+            ->values()
+            ->all();
+
+        $field->update(['options' => $options]);
+
+        return $options;
+    }
 }

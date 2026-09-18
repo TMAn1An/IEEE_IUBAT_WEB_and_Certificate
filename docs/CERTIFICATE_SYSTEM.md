@@ -610,9 +610,12 @@ New tables, all with **no foreign key to `certificate_templates` or `certificate
 |---|---|
 | `qr_categories` | `name`, `slug`, `event_name` (the old tool's "Conference/Event", fixed per category rather than a per-submission toggle — see §Known differences), `description`, `is_active` (a plain boolean, no draft/active/archived lifecycle), `created_by`. |
 | `qr_category_fields` | `qr_category_id`, `label`, `key`, `type` (`App\Enums\QrCategoryFieldType` — text/long_text/number/date/dropdown only, no PDF-related system-field cases), `required`, `options`, `sort_order`, `is_recipient_name`, `show_on_verification`. No `position`/`style` JSON — there is no PDF placement concept in this tool at all (per the brief's explicit "Keep this simple. No PDF position. No style JSON. No layout."). |
-| `qr_certificates` | `qr_category_id`, `recipient_name`, `event_name` (denormalized from the category at creation time, or an imported row's own preserved value), `data` (JSON, dynamic per category), `codeword` (unique, 16-char format — see below), `status` (`App\Enums\QrCertificateStatus`: `Active`/`Revoked` only — no `Reissued`/`GenerationFailed`, since neither concept exists here), `created_by`. No `certificate_number` (the old tool never had one — "SL" was a per-file row counter, not a formatted number), no `pdf_path`/`template_snapshot`/`layout_snapshot` (no PDF is ever rendered, and unlike the advanced system, this tool does not snapshot field definitions at issuance — see §No snapshot, a deliberate simplification below). |
+| `qr_certificates` | `qr_category_id`, `recipient_name`, `event_name` (denormalized **per record**, resolved from the live form's conference selection at submission time — see §Generate QR workflow — or an imported row's own preserved value), `data` (JSON, dynamic per category), `codeword` (unique, 16-char format — see below), `status` (`App\Enums\QrCertificateStatus`: `Active`/`Revoked` only — no `Reissued`/`GenerationFailed`, since neither concept exists here), `created_by`. No `certificate_number` (the old tool never had one — "SL" was a per-file row counter, not a formatted number), no `pdf_path`/`template_snapshot`/`layout_snapshot` (no PDF is ever rendered, and unlike the advanced system, this tool does not snapshot field definitions at issuance — see §No snapshot, a deliberate simplification below). |
+| `qr_conference_types` | `name` (unique) — the "Conference"/"Event" type dropdown's own option list, persisted server-side instead of the old tool's `localStorage`. Global, not per-category. |
+| `qr_conference_options` | `qr_conference_type_id`, `name` — the name options nested under a type (e.g. "IEEE BECITHCON 2026" under "Conference"). |
 
-Models: `App\Models\QrCategory`, `QrCategoryField`, `QrCertificate` — flat under `App\Models`,
+Models: `App\Models\QrCategory`, `QrCategoryField`, `QrCertificate`, `QrConferenceType`,
+`QrConferenceOption` — flat under `App\Models`,
 matching this project's existing convention. Services: `App\Services\QrTool\*` — a fully separate
 namespace, mirroring the advanced system's service *structure* (a codeword service, a field-rules
 service, an issuance service, an `Import/` sub-namespace) without sharing its *code*, except for
@@ -646,24 +649,120 @@ public verification route without any special-casing, because
 `VerificationCodewordService::ACCEPTED_PATTERN` (`[A-Za-z0-9_-]{4,128}`) was already broad enough
 to cover both; see §Public verification integration.
 
-### Generate QR workflow
+### Generate QR workflow — one page, old-tool-parity rebuild
 
-`Admin\QrTool\QrGenerateController` — `GET/POST /admin/qr-tool/generate[/{category}]`. Choose an
-active category, fill its dynamic form (`GenerateQrRequest`, rules built per-field from
-`QrCategoryFieldRules`, mirroring but not sharing code with `IssueCertificateRequest`), submit.
-`QrCertificateIssuanceService::issue()`:
+**Rebuilt a second time** after the first Phase-6-rebuild version above shipped a
+category-picker → dynamic-form → separate-result-page flow. That was still a redesign the brief
+explicitly ruled out: "Do NOT create a new category-driven workflow... The goal is to keep the old
+tool looking and behaving almost exactly as it does now." `Admin\QrTool\QrGenerateController` —
+`GET/POST /admin/qr-tool/generate` — is now genuinely **one page**, no `{category}` route
+parameter at all, recreating `IEEEQRCODEGENERATOR-main/templates/index.html`'s actual three-panel
+layout (Create Entry / Generated Result / Recent Entries) and CSS
+(`public/css/qr-tool.css`, vendored byte-for-byte from the old tool's `static/css/style.css`).
 
-1. Confirms the category is `is_active`.
-2. Reads the field flagged `is_recipient_name` and copies its value into `recipient_name`.
-3. Mints a codeword (`QrToolCodewordService`, retried on the rare collision).
-4. Inserts the `qr_certificates` row with `event_name` copied from the category.
+- **Bound to one fixed category** — `config('qr-tool.primary_category_slug')`
+  (`QrCategoryService::primary()`), matching the real old tool having exactly one form. The
+  multi-category CRUD from the first rebuild still exists at `/admin/qr-tool/categories` for
+  anyone who needs a second category later; the main page just isn't built around picking one.
+- **Form field names match the old tool exactly** — `name`, `role_select`, `include_conference`,
+  `conference_type`, `conference_select`, `include_session`, `session` (see
+  `GenerateQrRequest`) — not this project's usual generic `fields[{key}]` shape. A deliberate,
+  narrow exception: this page recreates one specific known form, not a generic per-category
+  renderer.
+- **Conference/event is chosen live, per submission again** — reverting the first rebuild's
+  simplification (a category-fixed `event_name`). The old tool's actual "Include conference/event"
+  checkbox + type/name dropdown pair is back, now backed by two small tables
+  (`qr_conference_types`, `qr_conference_options` — see §Persisted option lists below) instead of
+  the category's own column. `event_name` is still written per-record (denormalized, matching the
+  old tool never persisting `conference_type` to its Excel rows either).
+- **`QrCertificateIssuanceService::issue()`** now takes an explicit `?string $eventName` (the
+  resolved conference selection, or null when the checkbox is off), falling back to the category's
+  own `event_name` for any other caller (e.g. a future second category) that doesn't pass one. It
+  also runs the duplicate check before creating anything — see §Duplicate handling below.
+- **No redirect after POST, matching the old tool's own `render_template()`-in-the-POST-handler
+  behavior exactly**: `store()` returns the *same* view, with `$result` populated, rather than a
+  redirect to a separate detail page. A page refresh after generating would resubmit the form in
+  both the old tool and this one — an old, accepted tradeoff, not a new regression — mitigated the
+  same way the old tool didn't even attempt: a client-side submit-button disable
+  (`public/js/admin/qr-tool.js`).
+- **Result panel** shows exactly the old tool's fields (Conference/Event, Role, Name, Session,
+  Codeword with a Copy button) plus two intentional additions the new brief asked for on top of the
+  old design: "Copy verification link" and "View verification" (opens the real public page). No
+  certificate number anywhere — the old tool never had one, and this tool doesn't invent one.
+- **Download Excel** — `GET /admin/qr-tool/generate/export.xlsx` — exports current DB rows using
+  the old tool's exact headings (see §Excel export below), shown in the topbar only when a result
+  is present, matching the old tool's own conditional (`{% if result %}`) exactly.
+- **Not reproduced**: the old tool's `rememberFormValues()`/`restoreFormValues()`
+  (`localStorage`-based "remember what I last typed across page loads" convenience). Minor, not
+  asked for explicitly, and orthogonal to every behavior the brief did list — skipped to keep scope
+  tight rather than silently expanding it.
 
-Result page (the record's own detail page, `qr-tool/records/show.blade.php`) shows recipient,
-category, event/conference, every field value, the QR inline, a "Download QR PNG" button, "Copy
-Verification Link", "View Verification" (opens the real public page), an optional "Copy QR image"
-(Clipboard API, feature-detected, hidden where unsupported — PNG download is the guaranteed path),
-and "Create another". No certificate number anywhere, per the brief's explicit instruction not to
-force that concept into this tool.
+### Persisted option lists (role, conference type, conference name)
+
+The old tool's "Add role option" / "Add type option" / "Add conference name" buttons persisted
+their lists only in that one browser's `localStorage` — invisible to any other admin, gone if
+`localStorage` is cleared. Kept the exact same interaction (instant, no full page reload) but
+persisted server-side instead, per the brief's explicit "Difference: persist ... in the database
+instead of keeping them only temporarily in the browser":
+
+- **Role options** are just `qr_category_fields.options` (the seeded `role` field's own dropdown
+  choices) — `QrCategoryFieldService::addOption()`/`removeOption()`, case-insensitive duplicate
+  check matching the old JS exactly.
+- **Conference type/name options** are new, small, fully independent tables:
+  `qr_conference_types` (id, name) and `qr_conference_options` (id, qr_conference_type_id, name) —
+  global, not per-category, matching the old tool having exactly one such pair of lists.
+  `QrConferenceOptionService` manages both.
+- **Three JSON endpoints** (`Admin\QrTool\QrOptionsController`, `/admin/qr-tool/options/*`), called
+  via `fetch()` from `public/js/admin/qr-tool.js` — add/remove role, add/remove conference type,
+  add/remove conference name — each returns the updated authoritative list, which the page
+  re-renders into the relevant `<select>` without a full reload.
+- **Removing an option never touches historical records** — `qr_certificates` stores the resolved
+  role/conference as a plain string inside `data`/`event_name`, with no foreign key back to either
+  option table. Removing "Volunteer" from the role list, for example, only stops it being offered
+  on the next Generate QR submission; every existing record that already used it is completely
+  unaffected. Verified by a dedicated test
+  (`test_role_option_remove_does_not_alter_existing_records`).
+
+### Duplicate handling
+
+Reproduced deliberately, not skipped: `QrCertificateIssuanceService::findDuplicate()` reimplements
+the old tool's `record_exists()` — an exact, case-insensitive/trimmed match across every submitted
+field value (for the seeded category, that's name+role+session, the old tool's own fixed fields)
+within the same category. On a match, `issue()` returns the **existing** `QrCertificate` instead of
+creating a new row; the controller checks `$certificate->wasRecentlyCreated` (Eloquent's own
+"was this just inserted" flag) to show a "Matched an existing entry" note instead of "Saved to the
+database."
+
+**One deliberate improvement over the old tool's exact response, explained rather than silently
+changed**: the old tool's duplicate path shows only a flash-message mentioning the existing
+codeword and redirects to an empty result panel — it does not redraw the QR/details for the
+matched record on that response. This version shows the full result panel (QR image included) for
+the matched record, which directly satisfies the new brief's own instruction to "reuse/show the
+existing record and QR rather than generating a duplicate" (its literal wording asks for more than
+the old tool's plain text-only response gave).
+
+Not reproduced: the duplicate check is **not** scoped to the conference/event selection, exactly
+matching the old tool's own `record_exists()` (it never considered conference either).
+
+### Excel export
+
+`GET /admin/qr-tool/generate/export.xlsx` builds a `.xlsx` on the fly from the current
+`qr_certificates` rows for the primary category, using the exact same historical headings as
+import (`SL, Conference, Role, Name, Session, Codeword, Created At, QR File`). `QR File` is always
+blank — there is no file to reference; the QR is generated on demand from the codeword. Excel is
+export-only here, never live storage — the database stays the one source of truth, per the brief's
+explicit "Do not use Excel as live storage."
+
+### Records
+
+`Admin\QrTool\QrRecordsController` — `GET /admin/qr-tool/records`, search across recipient name,
+codeword, and the raw `data` JSON text (covers role/session/whatever a category's fields happen to
+be called, without hardcoding specific key names a different category might not have). The main
+Generate QR page also shows its own "Recent Entries" table (latest 10, matching the old tool's own
+`get_recent_records(10)` exactly) inline, so this full searchable list is a secondary, "view
+everything" screen rather than the primary way to browse records.
+
+### Excel import — using the REAL old tool's headings
 
 ### Records
 
@@ -735,27 +834,32 @@ category — relevant for a fresh production deploy before the first `php artisa
 
 ### Known differences from the old tool
 
-Documented explicitly, as the brief required, rather than silently diverging:
+Documented explicitly, as the brief required, rather than silently diverging. Updated after the
+second, old-tool-parity rebuild — two items below (#3, #4) were previously listed as intentional
+simplifications and have since been *reverted* to match the old tool more closely, per that
+rebuild's explicit instruction not to redesign the workflow.
 
 1. **QR content**: the old tool encodes human-readable text with no verification step; the Laravel
-   version encodes a verification URL, per the brief's explicit Step 11 instruction. This is the
-   biggest behavioral change and is intentional — it's what makes a printed certificate's QR
-   actually checkable against a real database record.
+   version encodes a verification URL, per explicit instruction. This is the biggest behavioral
+   change and is intentional — it's what makes a printed certificate's QR actually checkable
+   against a real database record.
 2. **No "Other" role / custom role**: does not exist in the real old tool; not built here despite
    appearing as a plausible example in earlier planning. See §What the real old tool actually does.
-3. **Conference/Event is category-level, not a per-submission toggle**: the old tool lets an admin
-   include/exclude the conference name and pick its type per submission (two checkboxes + a
-   type/name dropdown pair, entirely client-side/`localStorage`-backed). The Laravel version fixes
-   `event_name` per `QrCategory` instead — matches the brief's own suggested `qr_categories` schema
-   (`event_name` as a category column) and the practical reality that, for this tool's one real
-   category, the conference name was always the same single value anyway.
-4. **Duplicate handling not reproduced**: the old tool's name+role+session soft-duplicate check
-   (reuse the existing codeword with a warning) was not built — the brief's Step 5-19 requirements
-   don't ask for it, and it would need a defined "what counts as a duplicate" rule per category
-   (the old tool only ever had one fixed field set to define it against). Can be added later if
-   real duplicate-registration problems surface.
-5. **`conference_type` is not modeled at all**: it never persisted to the old tool's Excel rows
-   either (see above) — a category's `event_name` already captures the one thing that mattered.
+3. **Conference/Event is chosen per submission, matching the old tool** — the checkbox + type/name
+   dropdown pair from `templates/index.html` is fully reproduced (see §Generate QR workflow and
+   §Persisted option lists), backed by two small database tables instead of `localStorage`. An
+   earlier rebuild had simplified this to a fixed-per-category `event_name`; reverted once the
+   brief asked explicitly to keep this exact old-tool behavior.
+4. **Duplicate handling is reproduced**, matching the old tool's `record_exists()` — see §Duplicate
+   handling above for the exact behavior and the one small, explained improvement (showing the
+   matched record's full QR/details instead of only a text-mentioned codeword).
+5. **`conference_type` is still not persisted as its own column** on `qr_certificates` — matching
+   the old tool exactly, which never wrote it to an Excel row either (only the resolved
+   conference *name* is stored, in `event_name`).
+6. **The old tool's `localStorage`-based "remember my last form values across page loads" behavior
+   is not reproduced** — a minor UX convenience, not explicitly requested, skipped to keep scope
+   tight. Every other described behavior (checkboxes, add/remove options, result panel, recent
+   entries, Excel export) is reproduced.
 
 ## Bulk (Excel) generation — a different, still-future feature (Phase 7)
 
