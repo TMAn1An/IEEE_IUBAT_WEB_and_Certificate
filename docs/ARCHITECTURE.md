@@ -15,8 +15,8 @@ hosting without extra moving parts (no separate services, no Docker, no Node ser
 
 ## 2. Folder layout
 
-**Status**: reflects what's actually built through Phase 3. Items still marked as planned (not yet
-created) are for Phase 4 onward — see `docs/CHANGELOG.md` for what landed in which phase.
+**Status**: reflects what's actually built through Phase 4. Items still marked as planned (not yet
+created) are for Phase 5 onward — see `docs/CHANGELOG.md` for what landed in which phase.
 
 ```
 app/
@@ -29,8 +29,10 @@ app/
         DashboardController.php    # Phase 2
         UserController.php         # Super-Admin-only user management (Phase 2)
         ComingSoonController.php   # honest placeholders for not-yet-built nav sections (Phase 2/3)
-        TemplateController.php     # template CRUD + activate/archive — both admin roles (Phase 3)
+        TemplateController.php     # template CRUD + activate/archive (Phase 3) + background
+                                     # upload/stream (Phase 4) — both admin roles
         TemplateFieldController.php # field CRUD + move-up/move-down (Phase 3)
+        TemplateDesignerController.php # designer view + save-layout (Phase 4)
         # planned: CertificateController, BatchController (later phases)
       VerificationController.php   # planned: public GET /verify/{codeword} (Phase 6)
     Middleware/
@@ -41,10 +43,13 @@ app/
         Store/UpdateCertificateTemplateRequest.php    # Phase 3
         Store/UpdateTemplateFieldRequest.php          # Phase 3 — field-key format/uniqueness,
                                                         # dropdown-options, recipient-only-on-text
+        UploadTemplateBackgroundRequest.php           # Phase 4 — mimes:pdf + magic-header check
+        SaveTemplateLayoutRequest.php                 # Phase 4 — the designer's full save payload
         # planned: GenerateSingleCertificateRequest, UploadBatchRequest, etc.
   Policies/
     UserPolicy.php                 # Super-Admin-only user management, auto-discovered (Phase 2)
-    CertificateTemplatePolicy.php  # both admin roles, auto-discovered (Phase 3)
+    CertificateTemplatePolicy.php  # both admin roles, auto-discovered (Phase 3); manageLayout()
+                                     # ability added Phase 4 — blocks layout writes once archived
   Enums/
     UserRole.php, CertificateTemplateStatus.php, TemplateFieldType.php,
     CertificateBatchStatus.php, CertificateStatus.php    # Phase 2 — see docs/DATABASE_DESIGN.md
@@ -54,7 +59,7 @@ app/
     MakeAdminCommand.php           # `php artisan app:make-admin` — first production Super Admin (Phase 2)
   Models/
     User.php
-    CertificateTemplate.php
+    CertificateTemplate.php        # background/layout columns + hasBackground() added Phase 4
     TemplateField.php              # is_recipient_name cast added Phase 3
     CertificateBatch.php
     Certificate.php
@@ -64,9 +69,11 @@ app/
     Templates/
       TemplateService.php        # slug generation, activation validation gate (Phase 3)
       TemplateFieldService.php   # field-key rules, recipient exclusivity, reordering (Phase 3)
-    # planned (Phase 4-8): Certificates/CertificateNumberGenerator, Certificates/CodewordGenerator,
+      TemplateBackgroundService.php # PDF upload/replace storage (Phase 4)
+      TemplateLayoutService.php     # save-layout transaction: page size, fields, system elements,
+                                     # QR-squareness enforcement, IDOR re-check (Phase 4)
+    # planned (Phase 5-8): Certificates/CertificateNumberGenerator, Certificates/CodewordGenerator,
     # Certificates/CertificateGenerationService, Certificates/CertificateRevocationService,
-    # Templates/PdfCoordinateService (position/style — distinct from TemplateService above),
     # Pdf/CertificatePdfService, Qr/QrCodeService, Excel/ExcelTemplateExportService,
     # Excel/ExcelImportValidationService, Excel/BulkCertificateGenerationService
   Support/Site/
@@ -88,14 +95,20 @@ resources/
       coming-soon.blade.php   # one generic view for not-yet-built nav sections
       users/ (index, create, edit)
       templates/ (index, create, edit — edit IS the detail/management page: metadata form,
-                   field table, "Add field" link, Form Preview) — Phase 3
+                   background upload, field table, "Add field" link, Form Preview) — Phase 3,
+                   background section added Phase 4
       templates/fields/ (create, edit, and a shared _form.blade.php partial both include) — Phase 3
+      templates/designer.blade.php # the visual canvas editor (Phase 4) — see docs/CERTIFICATE_SYSTEM.md
       # planned: certificates/, batches/ (later phases)
     verify/                   # planned (Phase 6): show, not-found, revoked
 
 public/
   assets/                      # the EXISTING public-site css/js/img/pdf, copied across as-is
-  css/admin.css                 # plain, no-build-step admin stylesheet (Phase 2)
+  css/admin.css                 # plain, no-build-step admin stylesheet (Phase 2; designer layout
+                                  # rules added Phase 4)
+  js/admin/template-designer.js # vanilla JS: PDF.js render, drag/resize, coordinate conversion,
+                                  # settings panel, sample preview data (Phase 4) — no build step,
+                                  # matching the rest of the admin UI (see §5)
   index.php                    # Laravel front controller (only publicly reachable PHP entry point)
 
 database/
@@ -230,6 +243,19 @@ Laravel's own Policy/Gate system (`App\Policies\UserPolicy`, auto-discovered) an
 via a plain enum column don't need a permissions package, and there's no self-service registration
 or password-reset flow for a starter kit to save work on. Revisit only if role/permission
 complexity grows materially beyond "two fixed roles."
+
+**Phase 4 added zero Composer packages.** `setasign/fpdi`/`tecnickphp/tcpdf`/`endroid/qr-code`
+above remain *planned only* — still not in `composer.json` — because Phase 4 never needed to parse
+or write a PDF server-side (see `docs/CERTIFICATE_SYSTEM.md` §Certificate background & visual
+layout). Two browser-only libraries were added instead, both loaded from cdnjs with a
+self-verified SRI hash, the same pattern the original site already uses for `three.js`/
+`qrcode-generator` on the HTA page (`reference/legacy-site/hta-2026.php` → carried into
+`resources/views/pages/events/hta-2026.blade.php`) — not a new convention:
+
+| Library | Purpose | Why this one |
+|---|---|---|
+| `pdf.js` 3.11.174 (cdnjs, `<script>` tag) | Renders the uploaded certificate PDF to a `<canvas>` in the browser, and provides the `viewport.convertToPdfPoint()`/`convertToViewportPoint()` coordinate math the designer relies on | Mozilla's own PDF renderer — the de facto standard, BSD-licensed. Pinned to the last version shipping a classic global (`pdf.min.js`/`pdf.worker.min.js`) build; 4.0+ moved to ES-module-only output, which would need `<script type="module">` for no benefit here. SRI hash independently verified by downloading the file and computing its own SHA-512, not copied blind from an API response |
+| `qrcode-generator` 1.0.3 (cdnjs, `<script>` tag) | Renders a real, scannable sample QR in the designer's preview | Zero new dependency risk — already used elsewhere in this exact codebase for the HTA page's decorative QR widget; reusing the identical version/URL keeps there being only one `qrcode-generator` version pinned across the whole app |
 
 Packages considered and **not** chosen, with reasons, get added to this table as decisions are
 made in later phases (e.g. Breeze/Fortify vs. hand-rolled auth — see `docs/SECURITY.md` §Auth).

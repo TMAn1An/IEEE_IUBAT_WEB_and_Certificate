@@ -60,6 +60,58 @@
     </form>
   </div>
 
+  <div class="admin-card" style="max-width:640px">
+    <h2 style="margin-top:0;font-size:1rem">Certificate background</h2>
+
+    @if ($template->hasBackground())
+      <p style="margin-bottom:6px">
+        <strong>{{ $template->original_filename }}</strong>
+        <span style="color:var(--muted);font-size:.85rem">
+          &middot; {{ number_format($template->file_size / 1024, 0) }} KB
+          @if ($template->page_width && $template->page_height)
+            &middot; last saved at {{ (int) $template->page_width }}&times;{{ (int) $template->page_height }}pt
+          @endif
+        </span>
+      </p>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+        <a href="{{ route('admin.templates.designer.edit', $template) }}" class="btn btn--primary">Open designer</a>
+        <a href="{{ route('admin.templates.background.show', $template) }}" class="btn btn--ghost" target="_blank" rel="noopener">View PDF</a>
+      </div>
+      @if ($canManageLayout)
+        <details>
+          <summary style="cursor:pointer;color:var(--muted);font-size:.85rem">Replace background&hellip;</summary>
+          <div style="margin-top:12px">
+            <div class="alert alert--error" style="margin-bottom:12px">
+              Replacing the background does not move existing field positions. If the new file's
+              dimensions differ, open the designer afterward to check placement before saving.
+            </div>
+            <form method="POST" action="{{ route('admin.templates.background.store', $template) }}" enctype="multipart/form-data" onsubmit="return confirm('Replace the current certificate background?')">
+              @csrf
+              <div class="field">
+                <input type="file" name="background" accept="application/pdf" required>
+                @error('background')<div class="error">{{ $message }}</div>@enderror
+              </div>
+              <button type="submit" class="btn btn--ghost">Replace background</button>
+            </form>
+          </div>
+        </details>
+      @endif
+    @elseif ($canManageLayout)
+      <p style="color:var(--muted)">Upload the Canva-exported PDF to use as this certificate's background.</p>
+      <form method="POST" action="{{ route('admin.templates.background.store', $template) }}" enctype="multipart/form-data">
+        @csrf
+        <div class="field">
+          <input type="file" name="background" accept="application/pdf" required>
+          <div class="help">PDF only, up to 10MB.</div>
+          @error('background')<div class="error">{{ $message }}</div>@enderror
+        </div>
+        <button type="submit" class="btn btn--primary">Upload background</button>
+      </form>
+    @else
+      <p style="color:var(--muted)">This template is archived and read-only. No background has been uploaded.</p>
+    @endif
+  </div>
+
   <div class="admin-card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <h2 style="margin:0;font-size:1rem">Dynamic fields</h2>

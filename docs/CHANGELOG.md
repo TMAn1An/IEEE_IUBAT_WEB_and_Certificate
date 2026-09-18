@@ -219,3 +219,101 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   layout: new controllers/requests/policy/services/views). PDF upload, template positioning,
   drag/drop, QR, certificate generation, and Excel are explicitly out of scope for this phase per
   the brief and were not started.
+
+## Phase 4 — Certificate template design and field placement (2026-09-17)
+
+- **Inspected the actual attached demo Canva PDF before deciding anything** (per the brief's
+  explicit instruction): PDF 1.4, classic non-compressed xref table, single page, `MediaBox
+  [0.0 8.579974 842.25 604.07996]` (≈A4 landscape, non-zero origin), Producer/Creator both Canva,
+  1.3MB. The non-zero MediaBox origin directly shaped the coordinate-conversion approach below.
+  Also confirmed Imagick is present in the local Sail dev image but **not** in production's
+  confirmed PHP module list (Phase 0's inspection) — decisive against any server-side PDF
+  rasterization for this phase.
+- **Database**: one migration, `add_background_and_layout_columns_to_certificate_templates_table`,
+  adding `original_filename`/`file_mime`/`file_size` (asset metadata for the existing
+  `source_pdf_path` column) and two new nullable JSON columns, `certificate_number_layout` and
+  `qr_code_layout` — the two system elements' storage (see design decision below). Verified
+  rollback-safe.
+- **Background handling**: the uploaded PDF is the only master asset — no server-side
+  rasterization, no stored preview image. `TemplateBackgroundService` stores it under a
+  server-generated UUID filename (never the client's), validated via `mimes:pdf` (real
+  `fileinfo`-based content sniffing) plus an explicit `%PDF-` magic-byte check — no FPDI/Imagick
+  dependency needed for validation either, since nothing parses the PDF's internal structure in
+  this phase. Replacing a background doesn't touch existing field positions; the edit page warns
+  that dimensions may have changed and to re-check the designer.
+- **Coordinate system**: PDF points (bottom-left origin), matching Phase 0's original plan in
+  `docs/TEMPLATE_EDITOR.md` — with one refinement found directly from inspecting the real demo
+  PDF: conversion routes through **PDF.js's own `viewport.convertToPdfPoint()`/
+  `convertToViewportPoint()`**, not a hand-rolled y-flip formula, because that demo PDF's MediaBox
+  does not start at `[0,0]`. A naive formula would have silently misplaced every element on
+  exactly this file.
+- **System-element storage decision**: `certificate_number`/`qr_code` are explicitly *not*
+  `template_fields` rows (per the brief) and *not* a new table — two nullable JSON columns directly
+  on `certificate_templates` instead, since there are exactly two of these per template, always,
+  with no independent lifecycle a table would justify. QR height is forced equal to width
+  server-side on every save, regardless of what's submitted, guaranteeing "square by default" can't
+  drift even from a hand-crafted request.
+- **Services**: `TemplateBackgroundService` (upload/replace, safe delete-after-commit ordering) and
+  `TemplateLayoutService` (one DB transaction per "Save Layout": page dimensions, every field's
+  position/style, both system elements, plus a second IDOR check on field ownership independent of
+  the Form Request's).
+- **Authorization**: `CertificateTemplatePolicy::manageLayout()` — same two roles as template
+  management generally, additionally `false` once a template is archived. Viewing the designer
+  stays allowed for archived templates (reads the existing `update` ability); only the two write
+  actions (save layout, upload background) check `manageLayout`.
+- **Visual editor**: `GET/POST /admin/templates/{template}/designer`, a 3-column layout (available
+  elements / PDF canvas / settings panel) rendered entirely with vanilla JS
+  (`public/js/admin/template-designer.js`) — no Alpine/Vite introduced, matching the project's
+  established admin-UI pattern (confirmed by inspecting `package.json`/`vite.config.js` first:
+  Vite/Tailwind are unused default-scaffold leftovers, `@vite` appears in zero Blade views). Drag
+  from the sidebar (HTML5 Drag and Drop) places a new element; Pointer Events handle subsequent
+  move/resize on an already-placed element; a numeric settings panel (in PDF points, not pixels)
+  offers precise entry as an alternative to dragging. Sample preview values (heuristic, driven by
+  `field_type`/`field_key`, never stored) replace empty boxes so the layout is legible while
+  editing; the QR sample is a real scannable code via `qrcode-generator` (same CDN version already
+  used by the original site's HTA page — zero new dependency risk).
+- **Dependencies**: zero new Composer packages (Phase 4 never opens/writes a PDF server-side).
+  Two CDN-loaded JS libraries instead — `pdf.js` 3.11.174 and `qrcode-generator` 1.0.3 — both with
+  an SRI hash independently verified by downloading the file and computing its own SHA-512, not
+  copied blind. Full reasoning in `docs/ARCHITECTURE.md` §6.
+- **Found and fixed live** (manual QA before/alongside writing tests, same discipline as Phases 2
+  and 3): a Blade `@json()` directive whose argument was a multi-line `->map(fn ($f) => [...])`
+  array literal failed to compile ("Unclosed '[' ... does not match ')'") — Blade's directive-
+  argument parser doesn't handle a multi-line bracketed expression reliably. Fixed by precomputing
+  the value in a `@php` block first and passing a single simple variable to `@json()`.
+- **Manual QA** — the actual demo PDF, uploaded through the real HTTP flow (not a synthetic file):
+  upload succeeded, byte-identical when streamed back (`sha256sum` match), designer page loaded
+  and rendered `DESIGNER_CONFIG` correctly; a full "Save Layout" payload (two dynamic fields, the
+  certificate-number element, the QR element, all at real coordinates against the demo PDF's
+  842.25×604.08pt page) persisted correctly and reappeared identically on reload; a non-square QR
+  submission (`width:80, height:200`) was silently corrected to `80×80` server-side; a position at
+  `x: 99999` was rejected with "far outside the certificate canvas" and the field's stored position
+  was untouched; a field ID belonging to a second, separately-created template was rejected with
+  "do not belong to this template" and left unmodified — direct proof of the IDOR guard; archiving
+  a template left the designer viewable (200, "Read-only" badge, `canEdit: false`) but blocked both
+  the save-layout POST and the background-upload POST with 403; a non-PDF file (`.txt` renamed,
+  and a real Laravel `UploadedFile::fake()` non-PDF in the automated tests) was rejected by both the
+  `mimes:pdf` rule and the magic-byte check; both `certificate_manager` and `super_admin` dev
+  accounts could do all of the above, confirming equal access. No headless-browser tool was
+  available in this environment, so the actual drag/resize/pointer-event interactions and PDF.js's
+  visual rendering were not exercised by an automated real browser — only via direct HTTP requests
+  simulating what the client-side JS produces, plus Node.js syntax-checking
+  (`node --check template-designer.js`) and careful code review of the PDF.js API usage. Flagged in
+  the Phase 4 completion report as something worth a real manual browser pass before this ships.
+- **Tests** (`tests/Feature/Admin/TemplateDesignerTest.php`): the 11 items requested — authorized
+  open, unauthorized blocked, layout save + persistence (fields, styling), system-element
+  persistence (both certificate_number and qr_code), QR-squareness enforcement, out-of-bounds
+  rejection, cross-template field rejection (IDOR), archived-template block (both write actions),
+  non-PDF rejection, valid-PDF upload + stream-back, and the Phase 3 blank-slug regression. 34
+  tests pass total (23 prior + 11 new), 166 assertions, no regressions. `vendor/bin/pint --test`
+  clean (79 files).
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md` gained a full §Certificate background & visual layout
+  section (background handling, coordinate system, position/style JSON, system-element storage,
+  sample preview data, status rules, server-side validation, the Canva-demo-PDF findings) and had
+  several Phase-4-forward-references corrected now that the phase is done (including the PDF
+  pipeline risk note, which now points at Phase 5 specifically). `docs/DATABASE_DESIGN.md` and
+  `docs/ARCHITECTURE.md` also updated (new columns/files/dependency reasoning) per CLAUDE.md's
+  documentation-upkeep rule, even though the brief only named CERTIFICATE_SYSTEM.md explicitly.
+  Real certificate issuance, verification tokens, QR verification URLs, the public verification
+  page, revocation, reissue, Excel bulk import, ZIP generation, and email sending were not started,
+  per the brief's explicit stop condition.

@@ -3,7 +3,7 @@
 MySQL/MariaDB, via Laravel migrations only — never hand-created in phpMyAdmin except the database
 and database user themselves (`docs/DEPLOYMENT_CPANEL.md`).
 
-**Status**: the schema below is implemented as of Phase 3 (`database/migrations/`). Columns/tables
+**Status**: the schema below is implemented as of Phase 4 (`database/migrations/`). Columns/tables
 marked *(later phase)* are intentionally not built yet — each phase stays scoped to what it
 actually needs (Phase 2: database + auth/admin foundation; Phase 3: template/field management),
 kept lean rather than pre-building columns for features that don't exist yet (bulk generation, PDF
@@ -54,10 +54,15 @@ rather than editing that migration in place — keeps a clean, honest migration 
 | name | string | e.g. "BECITHCON 2026 — Session Chair" |
 | slug | string, unique | |
 | description | text, nullable | |
-| source_pdf_path | string, nullable | path to the uploaded Canva-exported PDF; upload handling itself is Phase 4 |
-| page_width | decimal(8,2), nullable | PDF page width in points; populated when the template editor reads the uploaded PDF (Phase 4) |
+| source_pdf_path | string, nullable | server-generated storage path to the uploaded Canva-exported PDF (Phase 4, `TemplateBackgroundService`) |
+| original_filename | string, nullable | added Phase 4 — the client's filename, for display only, never used as a storage path (see `docs/SECURITY.md`) |
+| file_mime | string, nullable | added Phase 4 |
+| file_size | unsigned int, nullable | added Phase 4 — bytes |
+| page_width | decimal(8,2), nullable | PDF page width in points; written as a side effect of the first designer "Save Layout" (Phase 4) — see `docs/CERTIFICATE_SYSTEM.md` §Coordinate system for why this isn't populated at upload time |
 | page_height | decimal(8,2), nullable | PDF page height in points |
-| status | string, cast to `App\Enums\CertificateTemplateStatus` (`draft`, `active`, `archived`) | draft templates can't be used for generation (enforced once generation exists) |
+| certificate_number_layout | JSON, nullable, cast `array` | added Phase 4 — `{x, y, width, height, style}`, the certificate-number system element's layout. See `docs/CERTIFICATE_SYSTEM.md` §System-element layout storage for why this isn't a `template_fields` row |
+| qr_code_layout | JSON, nullable, cast `array` | added Phase 4 — `{x, y, width, height}`, `height` always forced equal to `width` server-side (square) |
+| status | string, cast to `App\Enums\CertificateTemplateStatus` (`draft`, `active`, `archived`) | draft templates can't be used for generation (enforced once generation exists); archived templates are layout-read-only as of Phase 4 |
 | created_by | FK -> `users.id`, `restrictOnDelete` | |
 | created_at / updated_at | timestamps | |
 
@@ -156,7 +161,8 @@ autocompletion + a `label()` method for display text in one place.
   a strong reason surfaces earlier.
 - Batch import/export file paths and ZIP handling — Phase 7.
 - Certificate PDF storage path — Phase 5.
-- Template editor coordinate/font data actually being populated in `position`/`style` — Phase 4.
+- ~~Template editor coordinate/font data actually being populated in `position`/`style`~~ — done,
+  Phase 4.
 - `certificates.recipient_name` actually being populated from a template's `is_recipient_name`
   field at generation time — Phase 5. The `template_fields.is_recipient_name` flag itself, and the
   "exactly one, text-only" rule around it, are built and enforced as of Phase 3 (see

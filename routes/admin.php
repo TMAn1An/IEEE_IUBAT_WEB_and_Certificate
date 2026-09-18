@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\AuthController;
 use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\TemplateController;
+use App\Http\Controllers\Admin\TemplateDesignerController;
 use App\Http\Controllers\Admin\TemplateFieldController;
 use App\Http\Controllers\Admin\UserController;
 use Illuminate\Support\Facades\Route;
@@ -42,6 +43,14 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::patch('/templates/{template}', [TemplateController::class, 'update'])->name('templates.update');
     Route::post('/templates/{template}/activate', [TemplateController::class, 'activate'])->name('templates.activate');
     Route::post('/templates/{template}/archive', [TemplateController::class, 'archive'])->name('templates.archive');
+
+    // Background PDF + visual designer (Phase 4). showBackground is a GET so
+    // the designer's PDF.js viewer can fetch it directly (same-origin,
+    // session-cookie authorized) — see docs/CERTIFICATE_SYSTEM.md.
+    Route::post('/templates/{template}/background', [TemplateController::class, 'uploadBackground'])->name('templates.background.store');
+    Route::get('/templates/{template}/background', [TemplateController::class, 'showBackground'])->name('templates.background.show');
+    Route::get('/templates/{template}/designer', [TemplateDesignerController::class, 'edit'])->name('templates.designer.edit');
+    Route::post('/templates/{template}/designer', [TemplateDesignerController::class, 'update'])->name('templates.designer.update');
 
     Route::get('/templates/{template}/fields/create', [TemplateFieldController::class, 'create'])->name('templates.fields.create');
     Route::post('/templates/{template}/fields', [TemplateFieldController::class, 'store'])->name('templates.fields.store');

@@ -25,8 +25,9 @@ Form Request, one service call).
 **Field types (Phase 3 admin-assignable set)**: `text`, `long_text`, `number`, `date`, `dropdown` —
 `App\Enums\TemplateFieldType::assignable()`. Configuring a field means: label, field key, type,
 required, show-on-verification, dropdown options (JSON array of plain strings, e.g.
-`["Keynote Speaker","Invited Speaker"]`), and sort order. No position/style (PDF coordinates,
-fonts, colors) yet — that's Phase 4's template editor, layered on top of the same rows.
+`["Keynote Speaker","Invited Speaker"]`), and sort order. Position/style (PDF coordinates, fonts,
+colors) are a separate concern, added by the Phase 4 visual designer on top of these same rows —
+see §Certificate background & visual layout below.
 
 ### System fields vs. input fields
 
@@ -43,10 +44,10 @@ fonts, colors) yet — that's Phase 4's template editor, layered on top of the s
   and QR image on the PDF.
 - They are not participant-entered data: nobody fills in a "certificate number" on the
   single-certificate form, and they never become an Excel column. They are **layout elements** —
-  Phase 4 gives them a PDF position (and, for the QR, nothing else — it has no label, no style
-  beyond size) the same way it gives ordinary fields a position, but they stay conceptually
-  separate from the fields loop everywhere else (the form, Excel, the `data` JSON, verification
-  display).
+  Phase 4 gave them a PDF position (and, for the QR, nothing else — it has no label, no style
+  beyond size), stored separately from `template_fields` (see §System-element layout storage
+  below), and they stay conceptually separate from the fields loop everywhere else (the form,
+  Excel, the `data` JSON, verification display).
 
 ### Recipient-name field
 
@@ -107,7 +108,204 @@ circulation); there's no "un-archive" action, but `activate()` works from any st
 archiving is not one-way in practice — flip it back to `active` any time it passes validation
 again.
 
-## PDF pipeline — open question to resolve early in Phase 4
+## Certificate background & visual layout — implemented Phase 4
+
+An admin uploads the Canva-exported PDF, visually positions every dynamic field plus the two
+system elements on top of it, and the layout survives a reload byte-for-byte. This is the "prove
+the dynamic architecture end-to-end, visually" milestone — no PDF is ever generated here (that's
+Phase 5); everything below is about *capturing where things go*, in a format Phase 5 can consume
+directly with no coordinate migration.
+
+### Background handling
+
+- **The uploaded PDF is the only master asset.** No server-side rasterization, no stored preview
+  image, no thumbnail. `App\Services\Templates\TemplateBackgroundService::upload()` stores the file
+  (UUID filename, `storage/app/private/certificate-templates/{template_id}/`, never the client's
+  original filename — see `docs/SECURITY.md`) and records `original_filename`/`file_mime`/
+  `file_size` for display, but never parses the PDF's internal structure.
+- **Why not Imagick/Ghostscript-based rasterization**: Imagick happens to be present in the local
+  Sail dev image, but it is **not** in the production cPanel host's confirmed PHP module list (see
+  `docs/ARCHITECTURE.md`/Phase 0's inspection) — building a feature that only works locally and
+  silently breaks in production is exactly the class of bug this project has been careful to avoid
+  throughout (see the PHP-8.2-pinning story in `docs/ARCHITECTURE.md` §6a). Relying on client-side
+  **PDF.js** instead (below) means the designer behaves identically in both environments, with zero
+  server-side PDF parsing dependency.
+- **Why not FPDI for validation either**: Phase 4 never asks FPDI to open the file (that's Phase
+  5's job, rendering the final certificate). Content validation is `mimes:pdf` (real content
+  sniffing via PHP's `fileinfo`/`finfo`, not the client-supplied extension or Content-Type) plus an
+  explicit check that the file's first 5 bytes are the literal `%PDF-` header
+  (`UploadTemplateBackgroundRequest`). Good enough to reject "renamed .txt file," which is the
+  actual attack this guards against; genuine PDF-structure corruption would surface later, loudly,
+  when PDF.js or (Phase 5) FPDI tries to open the file — not a silent security gap.
+- **Replacing a background** (draft or active templates only — archived is read-only, see below):
+  the old file is deleted only *after* the new one is stored and the database row committed, so a
+  failed request never leaves a template with no valid file. Existing field/system-element
+  positions are **not** auto-adjusted or cleared — the edit page shows a warning that dimensions may
+  have changed and to re-check the designer before saving again, per the brief ("do not silently
+  destroy all existing coordinates"). The actual comparison happens client-side: PDF.js reports the
+  new file's real dimensions the moment the designer loads it, and that's compared against
+  whatever was last saved.
+- **Max size**: 10MB (comfortably covers the demo Canva PDF, which is ~1.3MB) — see §Canva demo PDF
+  handling below for the actual file this was validated against.
+
+### Coordinate system
+
+All stored positions are in **PDF points** (1/72 inch), **not** browser pixels and **not**
+percentages — the same units Phase 5's PDF writer will use directly, so there is exactly one
+conversion boundary in the whole system (editor save time), matching the original plan in
+`docs/TEMPLATE_EDITOR.md`.
+
+The one refinement over that original plan, found while inspecting the actual demo PDF (see
+§Canva demo PDF handling): **conversion uses PDF.js's own `viewport.convertToPdfPoint()` /
+`convertToViewportPoint()`, not a hand-rolled y-flip formula.** The demo certificate's PDF page has
+a `MediaBox` of `[0.0 8.579974 842.25 604.07996]` — its origin is *not* `[0,0]`, a small but real
+Canva export quirk. A naive formula assuming a zero origin (`y_pt = page_height - canvas_y`) would
+misplace every element on a PDF like this one. PDF.js's viewport transform already accounts for
+the page's actual `MediaBox`, so routing every conversion through it is correct regardless of
+whether a given PDF happens to have a zero or non-zero origin — the designer never needs to know
+which case it's looking at.
+
+```
+public/js/admin/template-designer.js:
+
+screenBoxToPdf(box)   // {left, top, width, height} canvas px (top-left origin)
+                       // -> {x, y, width, height} PDF pt (bottom-left origin)
+pdfBoxToScreen(box)    // the inverse, for rendering already-saved positions on load
+```
+
+Both take the two opposite corners of a box, convert each through the viewport, and take the
+min/max — this normalizes the result regardless of the y-flip (a PDF-space bottom-left corner maps
+to a *larger* canvas-pixel Y than the top-right corner does, since canvas Y grows downward while
+PDF Y grows upward).
+
+`page_width`/`page_height` on `certificate_templates` are updated as a side effect of the first
+"Save Layout," not at upload time — PDF.js reads the true page size directly from the file on every
+designer load regardless of what's cached in those columns, so there's no risk of the designer
+displaying stale dimensions; the columns are a record for other parts of the app (e.g. the template
+list) to read without needing to open the PDF again.
+
+### Position JSON (`template_fields.position`)
+
+Unchanged shape from what Phase 2 already had ready:
+
+```json
+{ "x": 420.5, "y": 310.2, "width": 700, "height": 70 }
+```
+
+`(x, y)` is the box's **bottom-left** corner in PDF points. Written by
+`App\Services\Templates\TemplateLayoutService::saveLayout()`, one DB transaction per save covering
+every field plus both system elements together — either the whole layout save succeeds or none of
+it does (see CLAUDE.md's "use transactions for multi-step writes" rule).
+
+### Style JSON (`template_fields.style`)
+
+```json
+{ "font_size": 34, "font_weight": "bold", "alignment": "center", "line_height": 1.2, "color": "#000000", "wrap": true }
+```
+
+Exactly the shape suggested in the brief. `font_weight` is `normal`|`bold` only (no numeric
+weights — Phase 4 doesn't need finer granularity, and TCPDF's bold flag in Phase 5 is binary
+anyway). `alignment` is `left`|`center`|`right`. `color` must match `^#[0-9a-fA-F]{6}$` — this is
+also the injection guard: a value that isn't a plain 6-digit hex code is rejected outright, so
+nothing from a style field can ever reach rendered HTML/CSS as anything other than a validated
+color (`SaveTemplateLayoutRequest`).
+
+### System-element layout storage
+
+`certificate_number` and `qr_code` are **not** rows in `template_fields` — the brief was explicit
+about this, and it also fits the existing architecture better: there are exactly two of these per
+template, always, with no variable cardinality the way dynamic fields have. Storing them as two
+nullable JSON columns directly on `certificate_templates`
+(`add_background_and_layout_columns_to_certificate_templates_table`) was chosen over a new
+`template_layout_elements` table because a table earns its keep when rows have independent
+lifecycle/cardinality — these don't; there will never be a third one without a schema change
+either way, so a table would only add a join for no real flexibility gained. Two focused columns
+read exactly like the rest of the schema's existing JSON-column convention (`options`, `position`,
+`style` on `template_fields`).
+
+```json
+// certificate_number_layout
+{ "x": 40, "y": 30, "width": 220, "height": 24, "style": { "font_size": 12, "font_weight": "normal", "alignment": "left", "color": "#666666" } }
+
+// qr_code_layout
+{ "x": 740, "y": 20, "width": 80, "height": 80 }
+```
+
+QR is square by default and *stays* square regardless of what the browser submits —
+`TemplateLayoutService::squareQrLayout()` always overwrites `height` with `width` server-side, so
+even a client-side bug or a hand-crafted request can't desync it. `certificate_number` reuses a
+subset of the field style shape (no `line_height`/`wrap` — a certificate number is a single short
+line, those settings don't apply).
+
+### Sample preview data
+
+The designer shows realistic sample values instead of empty boxes, purely client-side
+(`sampleValueFor()` in `template-designer.js`) — nothing here is stored or touches the database.
+Driven by `field_type` first, refined by simple `field_key` substring heuristics (`name` → "John
+Doe", `institution`/`organi...` → "Example University", `title` → "A Sample Research Paper Title",
+`id` → "1570000012", etc., falling back to a type-based generic otherwise). This is a uniform
+heuristic applied to *any* template's field naming conventions — not a per-template branch, so it
+doesn't violate the "never write `if ($template->slug === ...)`" rule in CLAUDE.md. Certificate
+number's sample is the fixed string `IEEE-IUBAT-2026-0001`; the QR sample renders a real scannable
+QR (via `qrcode-generator`, the same CDN-loaded library the original site's HTA page already
+used — see §Canva demo PDF handling for why no new QR dependency was introduced) encoding a
+throwaway `/verify/SAMPLE-CODE` URL, purely so the designer shows what a real QR will look like at
+the chosen size.
+
+### Template status rules
+
+- **Draft**: fully editable (background, fields, layout).
+- **Active**: also fully editable in Phase 4, per the brief's explicit preference ("active
+  templates can still be edited during development unless existing business rules strongly suggest
+  otherwise") — no code currently depends on an active template's layout being frozen, and nothing
+  yet reads `position`/`style` to produce a real certificate (Phase 5).
+- **Archived**: read-only. `App\Policies\CertificateTemplatePolicy::manageLayout()` returns `false`
+  once a template is archived, checked by both the designer's save action and the background-upload
+  action (`SaveTemplateLayoutRequest`/`UploadTemplateBackgroundRequest` both authorize against it).
+  *Viewing* the designer stays allowed for an archived template (reads `update`, the same ability
+  every other template-management page uses) — an admin can still see how an archived template was
+  laid out, just not change it.
+
+### Server-side validation
+
+The browser is never trusted to have kept numbers sane, regardless of what the editor's own UI
+prevents (`SaveTemplateLayoutRequest`):
+
+- `page_width`/`page_height`: numeric, `1`–`5000`pt.
+- Every position's `x`/`y`: must land within the page bounds plus a small (20pt) tolerance for
+  intentionally edge-anchored elements — "wildly outside the canvas" (e.g. `x: 99999`) is rejected,
+  verified live against the actual demo PDF's dimensions.
+- Every position's `width`/`height`: minimum 2pt (10pt for QR), and can't exceed the page's own
+  dimensions (plus the same small tolerance).
+- Style `font_size`: 4–300pt. `font_weight`/`alignment`: restricted to the fixed value sets above,
+  not free text. `color`: hex-only regex, the injection guard described above.
+- **IDOR**: every `fields.*.id` in a save payload is re-checked against the `{template}` in the
+  URL, both in the Form Request and again in `TemplateLayoutService::saveLayout()` — a field
+  belonging to a different template is rejected with a clear error, verified live by attempting
+  exactly that.
+
+### Canva demo PDF handling
+
+Inspected the actual attached demo certificate (`Demo Certificate.pdf`) rather than assuming:
+**PDF 1.4** (`%PDF-1.4` header), a classic (non-compressed) cross-reference table — no `/Type
+/XRef` or `ObjStm` objects — single page, `MediaBox [0.0 8.579974 842.25 604.07996]` (≈ A4
+landscape, 297×210mm, with a small non-zero origin offset), `Producer`/`Creator` both `Canva`,
+1.3MB. Two concrete decisions this shaped:
+
+1. **PDF.js's own coordinate conversion, not a hand-rolled formula** — directly because of the
+   non-zero `MediaBox` origin found on this real file (see §Coordinate system above).
+2. **The free/open-source FPDI risk flagged in Phase 0 looks smaller than originally feared** — a
+   PDF 1.4 file with a classic xref table is exactly the case free FPDI *can* import. This is one
+   data point, not a closed question (a different Canva export could still land on 1.5+ with
+   compressed xref streams), so Phase 0's decision to test with a real file at the point FPDI is
+   actually introduced (Phase 5) stands — but it's a meaningfully more optimistic starting point
+   than "unknown."
+
+No PNG/preview image was generated from this file at any point — the designer renders the PDF
+directly via PDF.js on every load, confirmed working against this exact file during manual QA (see
+the Phase 4 completion report).
+
+## PDF pipeline — open question, now specifically for Phase 5
 
 Plan: **FPDI** imports the admin-uploaded Canva PDF's first page as a background; **TCPDF** (the
 PDF FPDI writes into) then draws each `template_fields` row's value at its stored position, plus
@@ -131,26 +329,34 @@ and try importing it with plain `setasign/fpdi`. Three possible outcomes:
    may not exist on the target cPanel account.
 
 **Decision (2026-09-17)**: proceed with the open-source `setasign/fpdi` + `tecnickphp/tcpdf` stack
-as planned. Do not pre-purchase the commercial FPDI PDF-Parser add-on. The real test happens in
-Phase 4 when a genuine Canva-exported certificate PDF is uploaded through the template editor for
-the first time. If that import fails due to the PDF-1.4 ceiling, stop and get an explicit decision
-from the user at that point (buy the commercial add-on vs. require admins to flatten/downgrade the
-PDF before upload) rather than silently working around it.
+as planned. Do not pre-purchase the commercial FPDI PDF-Parser add-on.
+
+**Update (Phase 4)**: Phase 4 ended up not needing FPDI at all — the designer reads the PDF
+entirely client-side via PDF.js (see §Certificate background & visual layout above), so it was
+never the moment this risk would surface. It's pushed to Phase 5, the first time anything asks
+FPDI to actually open a template's PDF. One relevant data point from inspecting the real demo
+certificate: it's PDF 1.4 with a classic (non-compressed) xref table — precisely the case free
+FPDI *can* import — which is more encouraging than "unknown," though not proof a different Canva
+export won't land on 1.5+. The real test still happens the first time Phase 5 opens an actual
+template's stored PDF with FPDI. If that import fails due to the PDF-1.4 ceiling, stop and get an
+explicit decision from the user at that point (buy the commercial add-on vs. require admins to
+flatten/downgrade the PDF before upload) rather than silently working around it.
 
 ## Template lifecycle
 
-1. **(Phase 4, not yet built)** Super Admin uploads a PDF: validated by real content inspection
-   (not just extension/MIME header — see `docs/SECURITY.md`), reasonable max size. On upload, the
-   page's width/height in points is read and stored on `certificate_templates` — this is what
-   makes the coordinate conversion in `docs/TEMPLATE_EDITOR.md` possible without guessing.
-2. **(Phase 3 — built)** Either role (Super Admin or Certificate Manager — see
+1. **(Phase 3 — built)** Either role (Super Admin or Certificate Manager — see
    `docs/PROJECT_REQUIREMENTS.md` §Roles) creates a template record (name, slug, description) via
    `Admin\TemplateController`, then adds `template_fields` rows one at a time via a plain form
    (`Admin\TemplateFieldController`): label, key, type, required, show-on-verification, recipient
-   flag, dropdown options. No position/style yet (Phase 4). Field order is controlled by
-   Move Up/Move Down (`TemplateFieldService::moveUp()`/`moveDown()`, a simple sort_order swap with
-   the adjacent row) — full drag/drop placement is a separate, later concern (Phase 4's PDF
-   canvas), not this list order.
+   flag, dropdown options. Field order is controlled by Move Up/Move Down
+   (`TemplateFieldService::moveUp()`/`moveDown()`, a simple sort_order swap with the adjacent row)
+   — this is the field *list* order (drives the single-certificate form / Excel columns), separate
+   from the visual *position* set in the designer below.
+2. **(Phase 4 — built)** An admin uploads a PDF (`Admin\TemplateController::uploadBackground()`):
+   validated by real content inspection, not just extension/MIME header (see `docs/SECURITY.md`).
+   No page-dimension reading happens at upload time — the designer reads the true page size
+   directly from the file via PDF.js on every load (see §Certificate background & visual layout
+   above for why, and why no FPDI/Imagick dependency was needed for this).
 3. A "Form Preview" on the template's management page renders what the future single-certificate
    form will look like — disabled inputs generated straight from the current `template_fields`
    rows, nothing persisted. This is the concrete proof that two differently-shaped templates
@@ -304,3 +510,11 @@ MySQL is the only source of truth at all times. Excel files are:
   §Dynamic field architecture above. PDF/QR/Excel/generation sections above remain accurate
   descriptions of *planned* behavior for their respective later phases; nothing in this phase
   touched them.
+- _(Phase 4)_ Built certificate background upload + the visual designer — see §Certificate
+  background & visual layout above. Inspected the real demo Canva PDF rather than assuming
+  anything about it; the non-zero `MediaBox` origin it turned out to have is why coordinate
+  conversion routes through PDF.js's own viewport transform instead of a hand-rolled formula.
+  Confirmed Imagick is present locally (Sail) but not in production's module list, which is why no
+  server-side PDF rasterization was built. FPDI/TCPDF/Imagick are still not Composer dependencies
+  of this project — Phase 4 needed none of them. QR/certificate-generation/verification sections
+  above remain *planned*; nothing in this phase touched them.

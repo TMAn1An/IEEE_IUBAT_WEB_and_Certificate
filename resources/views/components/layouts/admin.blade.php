@@ -1,4 +1,4 @@
-@props(['title' => 'Admin'])
+@props(['title' => 'Admin', 'wide' => false])
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -40,7 +40,7 @@
     <header class="admin-topbar">
       <h1>{{ $title }}</h1>
     </header>
-    <div class="admin-content">
+    <div class="admin-content{{ $wide ? ' admin-content--wide' : '' }}">
       @if (session('status'))
         <div class="alert alert--ok">{{ session('status') }}</div>
       @endif

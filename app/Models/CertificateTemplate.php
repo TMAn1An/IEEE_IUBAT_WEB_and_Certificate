@@ -17,8 +17,13 @@ class CertificateTemplate extends Model
         'slug',
         'description',
         'source_pdf_path',
+        'original_filename',
+        'file_mime',
+        'file_size',
         'page_width',
         'page_height',
+        'certificate_number_layout',
+        'qr_code_layout',
         'status',
         'created_by',
     ];
@@ -29,7 +34,16 @@ class CertificateTemplate extends Model
             'status' => CertificateTemplateStatus::class,
             'page_width' => 'decimal:2',
             'page_height' => 'decimal:2',
+            'file_size' => 'integer',
+            'certificate_number_layout' => 'array',
+            'qr_code_layout' => 'array',
         ];
+    }
+
+    /** Whether a certificate background has been uploaded yet. */
+    public function hasBackground(): bool
+    {
+        return $this->source_pdf_path !== null;
     }
 
     /** @return HasMany<TemplateField, $this> */
