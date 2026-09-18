@@ -31,7 +31,8 @@ class CertificateController extends Controller
             ->when($search !== '', function ($query) use ($search) {
                 $query->where(function ($query) use ($search) {
                     $query->where('certificate_number', 'like', "%{$search}%")
-                        ->orWhere('recipient_name', 'like', "%{$search}%");
+                        ->orWhere('recipient_name', 'like', "%{$search}%")
+                        ->orWhere('codeword', 'like', "%{$search}%");
                 });
             })
             ->latest('issued_at')

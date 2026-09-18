@@ -15,8 +15,10 @@ hosting without extra moving parts (no separate services, no Docker, no Node ser
 
 ## 2. Folder layout
 
-**Status**: reflects what's actually built through Phase 5. Items still marked as planned (not yet
-created) are for Phase 6 onward — see `docs/CHANGELOG.md` for what landed in which phase.
+**Status**: reflects what's actually built through Phase 6. Items still marked as planned (not yet
+created) are for Phase 7 onward — see `docs/CHANGELOG.md` for what landed in which phase. The
+Phase 4/5 PDF-designer files below are still present and still tested — Phase 6 paused that
+workflow, it didn't remove it (see `docs/CERTIFICATE_SYSTEM.md` §Simplified QR workflow).
 
 ```
 app/
@@ -33,8 +35,12 @@ app/
                                      # upload/stream (Phase 4) — both admin roles
         TemplateFieldController.php # field CRUD + move-up/move-down (Phase 3)
         TemplateDesignerController.php # designer view + save-layout (Phase 4)
-        CertificateController.php  # single-certificate issuance: choose template, dynamic form,
-                                     # list/search, detail, PDF download (Phase 5)
+        CertificateController.php  # single-certificate issuance (PDF path, Phase 5, paused): choose
+                                     # template, dynamic form, list/search, detail, PDF download
+        CertificateQrController.php # Phase 6, primary workflow: dynamic form -> DB row + codeword +
+                                      # on-demand QR PNG, no PDF
+        CertificateImportController.php # Phase 6: historical Excel import (upload -> map -> preview
+                                          # -> confirm), see docs/CERTIFICATE_SYSTEM.md §Excel import
         # planned: BatchController (Phase 7)
       VerificationController.php   # planned: public GET /verify/{codeword} (Phase 6)
     Middleware/
@@ -49,7 +55,10 @@ app/
         SaveTemplateLayoutRequest.php                 # Phase 4 — the designer's full save payload
         IssueCertificateRequest.php                   # Phase 5 — rules built dynamically from the
                                                         # selected template's fields; rejects
-                                                        # unknown field keys
+                                                        # unknown field keys; reused as-is by the
+                                                        # Phase 6 QR-generation route too
+        UploadCertificateImportRequest.php            # Phase 6 — mimes:xlsx + size check for the
+                                                        # Excel import upload step
         # planned: UploadBatchRequest, etc. (Phase 7)
   Policies/
     UserPolicy.php                 # Super-Admin-only user management, auto-discovered (Phase 2)
@@ -81,17 +90,36 @@ app/
       TemplateBackgroundService.php # PDF upload/replace storage (Phase 4)
       TemplateLayoutService.php     # save-layout transaction: page size, fields, system elements,
                                      # QR-squareness enforcement, IDOR re-check (Phase 4)
-    Certificates/                # Phase 5
-      CertificateIssuanceService.php    # orchestrates issuance in one DB transaction; write-PDF-
-                                          # then-insert-then-cleanup-on-failure ordering
+    Certificates/                # Phase 5 (PDF path, paused) + Phase 6 (simplified path, primary)
+      CertificateIssuanceService.php    # Phase 5 — orchestrates PDF issuance in one DB transaction;
+                                          # write-PDF-then-insert-then-cleanup-on-failure ordering
+      SimpleCertificateService.php      # Phase 6 — the no-PDF issuance path: number + codeword +
+                                          # DB row only, shares both sub-services below with Phase 5
       CertificateNumberService.php      # atomic, race-safe sequential certificate numbers
       VerificationCodewordService.php   # CSPRNG codeword generation (CLAUDE.md's "verification
                                           # token", reusing the existing `codeword` column)
       CertificateSnapshotService.php    # builds template_snapshot/layout_snapshot at issuance
+                                          # (Phase 5 path only — Phase 6 certificates have both null)
+      TemplateFieldRules.php            # Phase 6 — extracted from IssueCertificateRequest so the
+                                          # live form and the Excel importer validate a field
+                                          # identically; single source of truth for both
       QrCodeService.php                 # verification URL + draws the QR via TCPDF's native
-                                          # write2DBarcode() — no new QR package
-      IssuanceResult.php                # DTO: certificate + any field-overflow warnings
-      Pdf/
+                                          # write2DBarcode() (Phase 5, in-PDF) and pngBytes() via
+                                          # TCPDF2DBarcode::getBarcodePngData() (Phase 6, standalone
+                                          # PNG) — no new QR package either way
+      IssuanceResult.php                # DTO: certificate + any field-overflow warnings (Phase 5)
+      Import/                      # Phase 6 — historical Excel import
+        ExcelFileReader.php             # reads a .xlsx's headers + rows via PhpSpreadsheet
+        ImportMappingTarget.php         # the non-field mapping targets (codeword, certificate
+                                          # number, ignore) — see docs/CERTIFICATE_SYSTEM.md
+                                          # §Excel column mapping for why there's no separate
+                                          # "recipient name" target
+        CertificateImportValidator.php  # single source of truth for mapping + per-row validation,
+                                          # called identically by the preview and confirm steps
+        CertificateImportService.php    # writes valid rows to the database, one transaction per
+                                          # row (partial import is intentional here)
+        ImportRowResult.php, ImportValidationResult.php, ImportSummary.php   # DTOs
+      Pdf/                          # Phase 5 (paused, still present/tested)
         CertificatePdfService.php       # the FPDI/TCPDF renderer
         PdfPageBoxReader.php            # reads the real MediaBox/CropBox via FPDI's public,
                                           # standalone PdfReader API (not the protected
@@ -126,7 +154,10 @@ resources/
                    background section added Phase 4
       templates/fields/ (create, edit, and a shared _form.blade.php partial both include) — Phase 3
       templates/designer.blade.php # the visual canvas editor (Phase 4) — see docs/CERTIFICATE_SYSTEM.md
-      certificates/ (index, choose-template, issue, show) # Phase 5 — see docs/CERTIFICATE_SYSTEM.md
+      certificates/
+        index, choose-template, issue, show   # Phase 5 (PDF path, paused) — see docs/CERTIFICATE_SYSTEM.md
+        qr/ (choose-template, create)         # Phase 6, primary workflow
+        import/ (choose-template, upload, mapping, preview, result)   # Phase 6
       # planned: batches/ (Phase 7)
     verify/                   # planned (Phase 6): show, not-found, revoked
 
@@ -162,7 +193,10 @@ storage/
   app/
     private/      # certificate-templates/{id}/{uuid}.pdf (Phase 4), certificates/{year}/{uuid}.pdf
                    # (Phase 5) — both served only via authorized streaming controller routes, never
-                   # a public storage URL. batches/{id}/* still planned (Phase 7).
+                   # a public storage URL. imports/{uuid}.xlsx (Phase 6) — a server-generated UUID
+                   # only, deleted after a successful import; see docs/CERTIFICATE_SYSTEM.md
+                   # §Excel import for why there's no persistent import-batch table instead.
+                   # batches/{id}/* still planned (Phase 7).
 
 tests/
   Feature/
@@ -266,8 +300,9 @@ makes "new template, zero PHP changes" true.
 | `laravel/framework` ^12.0 | Application framework | Required target; PHP 8.2 minimum matches production exactly |
 | `setasign/fpdi` ^2.6 (**added Phase 5**) | Import an existing PDF page as a certificate background | De facto standard for "write on top of an existing PDF" in PHP. Validated against the real demo Canva PDF (PDF 1.4, classic xref table) — imports cleanly, the version-ceiling risk did not materialize. See `docs/CERTIFICATE_SYSTEM.md` §PDF generation pipeline |
 | `tecnickcom/tcpdf` **pinned `^6.8`** (**added Phase 5**) | The PDF writer FPDI imports into; draws text/QR on top | Strong Unicode/TTF font embedding (needed for Bangla names). **Must stay on 6.x** — `composer require` initially resolved the newest `7.0.10`, whose own package description now reads "Deprecated legacy PDF engine... use tc-lib-pdf instead"; that release throws a fatal error on `new TCPDF()` in this environment (font loading was restructured onto a separate, incompatible package). `setasign/fpdi`'s own `composer.json` pins its dev dependency to `tcpdf: ^6.8`, confirming 6.x is the tested-compatible line. `tc-lib-pdf` (the suggested replacement) has a different architecture FPDI cannot import into — not a viable alternative for this project. See `docs/CERTIFICATE_SYSTEM.md` §PDF generation pipeline for the full story. |
-| ~~`endroid/qr-code`~~ — **not added** | ~~QR generation~~ | TCPDF (already a dependency for the reason above) bundles native 2D barcode/QR generation (`write2DBarcode()`, real vector output) — a separate QR package would duplicate functionality already present. See `docs/CERTIFICATE_SYSTEM.md` §QR code |
-| `maatwebsite/excel` (PhpSpreadsheet wrapper) | Excel template export + bulk import/validation | The standard Laravel Excel package; chunked reading keeps memory bounded on shared hosting, good validation/import hooks. Not yet added — Phase 7 |
+| ~~`endroid/qr-code`~~ — **not added** | ~~QR generation~~ | TCPDF (already a dependency for the reason above) bundles native 2D barcode/QR generation, both drawn into a PDF (`write2DBarcode()`) and as standalone PNG bytes (`TCPDF2DBarcode::getBarcodePngData()`, Phase 6) — a separate QR package would duplicate functionality already present. See `docs/CERTIFICATE_SYSTEM.md` §QR code |
+| `phpoffice/phpspreadsheet` (**added Phase 6**) | Reads historical `.xlsx` files for the Excel import workflow | Chose the underlying library directly rather than `maatwebsite/excel` (which wraps it with queued-export/import abstractions this project doesn't need — Phase 6 only reads a few hundred rows synchronously within one request). Mature, actively maintained, PHP 8.2-compatible, no security advisories at install time. |
+| ~~`maatwebsite/excel`~~ — **not added** | ~~Excel wrapper~~ | Would duplicate `phpoffice/phpspreadsheet` (which it wraps) for no benefit at this project's scale — see above. Revisit only if Phase 7's bulk PDF generation needs its queued-export helpers specifically. |
 | `phpunit/phpunit` (dev) | Testing | **Decided in Phase 1/2** (superseding the original Pest plan below): kept whatever Laravel 12's `laravel new` scaffolded by default rather than swapping test frameworks before any real tests existed. Pest is a thin DSL over PHPUnit — revisit only if a concrete pain point with PHPUnit's syntax shows up; not worth the churn otherwise. |
 
 **Font asset, not a Composer package**: Noto Sans Bengali (SIL Open Font License) is embedded for

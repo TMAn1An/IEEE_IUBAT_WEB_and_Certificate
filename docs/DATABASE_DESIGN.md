@@ -3,12 +3,15 @@
 MySQL/MariaDB, via Laravel migrations only — never hand-created in phpMyAdmin except the database
 and database user themselves (`docs/DEPLOYMENT_CPANEL.md`).
 
-**Status**: the schema below is implemented as of Phase 5 (`database/migrations/`). Columns/tables
-marked *(later phase)* are intentionally not built yet — each phase stays scoped to what it
-actually needs (Phase 2: database + auth/admin foundation; Phase 3: template/field management;
-Phase 5: single-certificate issuance), kept lean rather than pre-building columns for features
-that don't exist yet (bulk generation, verification logging). Add them in the phase that actually
-needs them, and update this doc alongside that migration.
+**Status**: the schema below is implemented as of Phase 5 (`database/migrations/`) — **Phase 6
+needed zero schema changes**. `pdf_path`/`template_snapshot`/`layout_snapshot` were already
+`nullable()` (added that way in Phase 5, for exactly this kind of future flexibility), which
+turned out to be exactly what Phase 6's PDF-less "generate a codeword + QR" certificates and
+Excel-imported certificates needed — both simply leave all three `null`. Columns/tables marked
+*(later phase)* are intentionally not built yet — each phase stays scoped to what it actually
+needs, kept lean rather than pre-building columns for features that don't exist yet (bulk
+generation, verification logging). Add them in the phase that actually needs them, and update this
+doc alongside that migration.
 
 ## Entity overview
 

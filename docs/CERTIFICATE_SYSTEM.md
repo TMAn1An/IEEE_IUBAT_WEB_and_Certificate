@@ -546,7 +546,187 @@ Split into two rather than one blob because they're conceptually different (data
 geometry) and are consumed by different code paths. Neither duplicates data blindly — `data` (the
 submitted field values) stays a single existing column, not re-copied into either snapshot.
 
-## Bulk (Excel) generation
+QR-only certificates (Phase 6, below) have **both snapshot columns `null`** — no PDF was ever
+rendered for them, so there's nothing to snapshot. `certificates.show` falls back to the live
+template's current fields for labeling `data` in that case; see §Simplified QR workflow.
+
+## Simplified QR workflow — implemented Phase 6
+
+**Status change**: the PDF designer and automatic PDF generation (§Certificate background &
+visual layout, §PDF generation pipeline above) are **paused, not removed**. The code, tests, and
+routes from Phases 4-5 all still exist and still pass; they're simply no longer the primary admin
+workflow. The immediate production need turned out to be migrating an existing local-tool
+workflow — dynamic form -> codeword -> QR -> manual Canva placement — rather than finishing
+automatic PDF rendering. Both entry points share the same `certificates` table, the same
+`CertificateNumberService`, and the same `VerificationCodewordService`; nothing about Phase 5 was
+undone, and nothing here requires a template to have an uploaded PDF background at all.
+
+### Why one table, no new certificate storage
+
+The brief was explicit about this, and the existing Phase 2 schema already fit: `recipient_name`,
+`data`, `certificate_number`, `codeword`, `status`, `issued_at`/`created_by` all mean exactly what
+a QR-only certificate needs. The only schema question was whether `pdf_path` (and the two Phase 5
+snapshot columns) could be null for a certificate with no PDF — they already were
+(`->nullable()` since the Phase 5 migration that introduced them), so **no new migration was
+needed for Phase 6** at all.
+
+### `SimpleCertificateService`
+
+A new, deliberately small service (`App\Services\Certificates\SimpleCertificateService`) rather
+than adding a "skip the PDF" flag to `CertificateIssuanceService`: the two flows share the
+number/codeword sub-services but have nothing else in common (no background, coordinates, fonts,
+or PDF rendering here at all). It:
+
+1. Confirms the template is `active`.
+2. Reads the field flagged `is_recipient_name` and copies its submitted value into
+   `certificates.recipient_name` (identical pattern to Phase 5's issuance service).
+3. Mints a certificate number (`CertificateNumberService`) and a codeword
+   (`VerificationCodewordService`), both reused unchanged from Phase 5.
+4. Inserts the `certificates` row with `pdf_path`, `template_snapshot`, and `layout_snapshot` all
+   `null`.
+
+Route: `Admin\CertificateQrController` — `GET/POST /admin/certificates/generate-qr[/{template}]`.
+Same dynamic-form pattern as Phase 5's issue form (`IssueCertificateRequest`, reused verbatim —
+its rules are built from `$this->route('template')` regardless of which route invoked it).
+
+### QR PNG generation
+
+`QrCodeService` gained one new method, `pngBytes()`, alongside the Phase 5 `drawOnPdf()`. **No new
+package**: `TCPDF2DBarcode::getBarcodePngData()` generates a real standalone PNG with no PDF
+document involved at all — confirmed working in the Phase 6 spike, using the exact same QR
+encoder Phase 5's in-PDF QR already used. The QR is generated **on demand, every request**
+(`GET /admin/certificates/{certificate}/qr.png`), never written to disk — it's fully deterministic
+from the verification URL (which is itself fully deterministic from the certificate's `codeword`),
+so there's nothing to persist and nothing to clean up later.
+
+The certificate detail page (`certificates/show.blade.php`) shows the QR inline, a "Download QR
+PNG" link (`download` attribute, forces a save), a read-only verification-link field with a "Copy
+link" button (Clipboard API, `navigator.clipboard.writeText`), and an optional "Copy QR image"
+button (Clipboard API's `ClipboardItem`, feature-detected and hidden entirely in browsers that
+don't support it — PNG download is the guaranteed path per the brief). The admin downloads the PNG
+and places it into the existing Canva design by hand; nothing here touches Canva or produces a
+final certificate image/PDF.
+
+### Excel import
+
+Historical data lives in multiple `.xlsx` files (often one per certificate category), and their
+column headings are **not** consistent with each other or with this system's field labels — the
+importer's entire reason to exist is the mapping step, not just a bulk-insert.
+
+Routes (`Admin\CertificateImportController`, all under `/admin/certificates/import`):
+
+```
+GET  /import                       choose a category/template (ANY status — see below)
+GET  /import/{template}            upload form
+POST /import/{template}/upload     store file, read headers, render the mapping screen
+POST /import/{template}/preview    validate every row against the chosen mapping, show counts
+POST /import/{template}/errors     download a CSV of every row's error message
+POST /import/{template}/confirm    re-validate, then actually write certificates rows
+```
+
+**Import is not restricted to Active templates** (unlike QR generation/live issuance) —
+deliberately different from Phase 5's rule. Historical Excel data routinely belongs to an
+event/category that has since been archived, and blocking import there would make migrating that
+exact data impossible. A template must still have a recipient-name field configured (checked, with
+a clear error, not a crash — a `draft` template that was never activated might genuinely have
+none yet).
+
+**State across steps, without a new database table**: the uploaded file is stored once, at
+upload time, as `storage/app/private/imports/{uuid}.xlsx` — a server-generated UUID, never a
+client-supplied path. Every subsequent step (mapping/preview/errors/confirm) carries that UUID and
+the chosen column mapping through hidden form fields and re-derives everything else (headers, rows,
+validation) fresh from the stored file — **confirm never trusts what preview merely echoed back**,
+it re-runs the exact same `CertificateImportValidator` calculation from scratch. A persistent
+`import_batches` table was considered and rejected: the whole exchange normally completes in a
+handful of requests within one admin session, and the brief explicitly said not to duplicate
+certificate storage — adding another table for transient upload state would be exactly that kind
+of unnecessary duplication for what amounts to a few hidden `<input>` fields.
+
+### Excel column mapping
+
+The mapping screen lists every Excel column (with its heading and one sample value) next to a
+`<select>` offering: **Ignore column**, every one of the template's assignable fields (the
+recipient-flagged one is just a normal option here, labeled "(Recipient Name, required)" — there
+is deliberately no separate "Recipient Name" pseudo-target; see the note in
+`App\Services\Certificates\Import\ImportMappingTarget` for why an earlier version that *did* have
+one was wrong), **Existing Codeword**, and **Existing Certificate Number**.
+
+A best-effort auto-guess pre-selects obvious matches (a header containing "name" → the recipient
+field, "codeword" → Existing Codeword, "certificate"+"number" → Existing Certificate Number, or an
+exact case-insensitive match against a field's label) — the admin reviews and can override every
+row regardless; nothing is guessed silently. No synonym dictionary was built (e.g. "Designation" →
+Role, "University" → Institution) — deliberately, to avoid guessing wrong with false confidence;
+the admin's manual review is the actual correctness guarantee, the auto-guess is only a
+convenience for the common exact-match case.
+
+`CertificateImportValidator::validateMapping()` blocks the import (returns to the mapping screen
+with a clear message) before any row is even looked at if the recipient field isn't mapped, or if
+any other *required* assignable field isn't mapped.
+
+### Row validation
+
+`CertificateImportValidator::validateRows()` is the single source of truth both the preview and
+confirm steps call — reuses `App\Services\Certificates\TemplateFieldRules` (extracted from Phase
+5's `IssueCertificateRequest` so the two entry points can never validate a field differently) for
+every mapped field's type rules, plus:
+
+- **Codeword** (if a column is mapped to it): non-empty values are checked against a permissive
+  format pattern (`[A-Za-z0-9_-]{4,128}`, chosen because the old local tool's exact codeword shape
+  isn't known — this rejects blanks/garbage without assuming the current 64-hex-character shape
+  *new* codewords get), then checked for uniqueness against **both** the database and every other
+  row already seen earlier in the same file (a duplicate can be against existing data or another
+  row in the same spreadsheet — both are reported as "Duplicate codeword"). A valid, unique,
+  non-empty value is **preserved** onto the new certificate row verbatim — the whole point of this
+  path is that old QR codes printed on paper years ago must keep working. An empty cell (column
+  mapped, but blank for that row) means "generate a new one," exactly like a certificate that never
+  had a historical codeword.
+- **Certificate number**: identical shape (format check via a looser pattern allowing the
+  slashes/dots/spaces seen in old exports, then batch+database uniqueness, then preserve-if-valid /
+  generate-if-blank).
+- Every row's real Excel row number (header = row 1) is carried through to every error message, so
+  "Row 32: Duplicate codeword" points at the exact row an admin would see if they opened the file.
+
+**Partial import, explicitly** (not all-or-nothing): the preview screen's own mockup in the brief
+(`Imported: 147 / Skipped: 3`) assumes it, and it's the only sane behavior for genuinely messy
+historical data — one malformed row in a 150-row file shouldn't block the other 149 real
+certificates. Every invalid row is skipped and reported, never imported partially or guessed at.
+
+### Import result
+
+`CertificateImportService::import()` processes each valid row in **its own transaction** (not one
+transaction for the whole file) — a batch of "147 good, 3 bad" is the expected normal case here,
+unlike Phase 5 single-issuance where any failure should produce nothing at all. One row hitting an
+extremely unlikely last-moment unique-constraint race doesn't discard every other good row around
+it; it's simply counted as skipped and its message included in the result page.
+
+The result page shows exactly the fields the brief specified: Imported, Skipped, Certificates
+created, Codewords preserved, New codewords generated, plus (not in the brief's mockup but the
+same information for certificate numbers) Certificate numbers preserved / New certificate numbers
+generated. An error-report CSV (`Row,Errors`) can be downloaded from the preview screen before
+confirming — regenerated on demand from the same stored file + mapping, not a separately persisted
+report file.
+
+### Security
+
+Same two-role boundary as everything else in the certificate system (`CertificatePolicy::create()`
+— both `super_admin` and `certificate_manager`). The stored import file's UUID is validated with a
+strict UUID regex before ever touching the filesystem (`CertificateImportController::
+resolveStoredFile()`) — never a client-supplied path, closing the obvious path-traversal shape
+this kind of "carry a file reference through a form" design invites. Dynamic form/row values are
+validated server-side via the same `TemplateFieldRules` the live issuance form uses — dropdown
+values, required fields, and type rules are never trusted from the client or from the spreadsheet.
+`certificate_number`/`codeword` can never be set by an ordinary QR-generation form submission
+(`IssueCertificateRequest` rejects any unrecognized `fields.*` key) — only the Excel import path
+may explicitly preserve a *mapped* historical value, and only after the same uniqueness/format
+checks every other value goes through.
+
+## Bulk (Excel) generation — a different, still-future feature (Phase 7)
+
+Not to be confused with §Excel import (Phase 6, above). That importer migrates **historical** data
+(recipient/role/etc. + an existing codeword) with no PDF ever generated. This still-future feature
+is the opposite direction: an admin fills in a **blank template this system generates**, and it
+**generates a real PDF per row** (background + fields + certificate number + QR, the full Phase 5
+pipeline, at bulk scale). Different input shape, different output, different phase.
 
 1. Certificate Manager picks an active template, downloads the blank Excel template —
    `ExcelTemplateExportService` builds the header row directly from that template's
@@ -589,9 +769,13 @@ submitted field values) stays a single existing column, not re-copied into eithe
   not a rasterized image, and nothing is ever written to disk as a standalone QR file.
 - Error-correction level: `M` (matches the archived prototype's choice — a reasonable default for
   printed certificates that may be photographed at an angle).
-- The public `/certificate/verify/{token}` route/controller do **not** exist yet (Phase 6). The URL
-  shape is defined now in `config/certificates.php` specifically so Phase 6 only has to add the
-  matching route — it never needs to touch or reprint any certificate issued in Phase 5.
+- The public `/certificate/verify/{token}` route/controller still do **not** exist. The URL shape
+  is defined in `config/certificates.php` specifically so that route can be added later without
+  touching or reprinting any already-issued certificate.
+- **Phase 6 addition**: `QrCodeService::pngBytes()` — the same QR content, rendered as standalone
+  PNG bytes (`TCPDF2DBarcode::getBarcodePngData()`, still zero new packages) instead of drawn into
+  an open PDF document. Powers the simplified workflow's on-demand QR preview/download — see
+  §Simplified QR workflow.
 
 ## Verification page (`GET /verify/{codeword}`)
 
@@ -685,3 +869,12 @@ MySQL is the only source of truth at all times. Excel files are:
   renders correctly end to end (background + fields + certificate number + QR), including Bengali
   text via a newly embedded Noto Sans Bengali font — see the Phase 5 completion report for the
   rendered proof image and the full manual QA notes.
+- _(Phase 6)_ Paused the PDF designer/automatic-generation work (kept in the codebase, still
+  tested, no longer the primary workflow) and built the simplified QR-only workflow — see
+  §Simplified QR workflow above. No schema migration needed (`pdf_path`/snapshot columns were
+  already nullable from Phase 5). One new Composer package, `phpoffice/phpspreadsheet`, for Excel
+  reading. Caught and fixed a real design bug during manual testing: an early version used a
+  separate `_recipient_name` mapping pseudo-target, which meant a template's actual recipient
+  field (identified by `is_recipient_name`) could never satisfy its own "required field must be
+  mapped" check — fixed by treating the recipient field as a normal mappable field, matching how
+  the live QR form already handles it.

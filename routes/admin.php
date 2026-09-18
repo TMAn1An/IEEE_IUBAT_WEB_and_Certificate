@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\Admin\AuthController;
 use App\Http\Controllers\Admin\CertificateController;
+use App\Http\Controllers\Admin\CertificateImportController;
+use App\Http\Controllers\Admin\CertificateQrController;
 use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\TemplateController;
@@ -61,14 +63,35 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::post('/templates/{template}/fields/{field}/move-up', [TemplateFieldController::class, 'moveUp'])->name('templates.fields.move-up');
     Route::post('/templates/{template}/fields/{field}/move-down', [TemplateFieldController::class, 'moveDown'])->name('templates.fields.move-down');
 
-    // Single-certificate issuance (Phase 5). No 'edit'/'destroy' -- issued
-    // certificates are immutable (see docs/CERTIFICATE_SYSTEM.md
-    // §Snapshot strategy); revoke/reissue are Phase 8. /issue must come
-    // before /{certificate} so it isn't swallowed by the model-bound route.
+    // Single-certificate issuance (Phase 5, PDF-designer path — paused, not
+    // removed; see docs/CERTIFICATE_SYSTEM.md §Simplified QR workflow). No
+    // 'edit'/'destroy' -- issued certificates are immutable (§Snapshot
+    // strategy); revoke/reissue are Phase 8. Literal-segment routes
+    // (/issue, /generate-qr, /import) must come before /{certificate} so
+    // they aren't swallowed by the model-bound route.
     Route::get('/certificates', [CertificateController::class, 'index'])->name('certificates.index');
     Route::get('/certificates/issue', [CertificateController::class, 'chooseTemplate'])->name('certificates.choose-template');
     Route::get('/certificates/issue/{template}', [CertificateController::class, 'create'])->name('certificates.create');
     Route::post('/certificates/issue/{template}', [CertificateController::class, 'store'])->name('certificates.store');
+
+    // Phase 6 — the simplified, primary workflow: dynamic form -> DB row +
+    // codeword + on-demand QR, no PDF. See docs/CERTIFICATE_SYSTEM.md
+    // §Simplified QR workflow.
+    Route::get('/certificates/generate-qr', [CertificateQrController::class, 'chooseTemplate'])->name('certificates.qr.choose-template');
+    Route::get('/certificates/generate-qr/{template}', [CertificateQrController::class, 'create'])->name('certificates.qr.create');
+    Route::post('/certificates/generate-qr/{template}', [CertificateQrController::class, 'store'])->name('certificates.qr.store');
+    Route::get('/certificates/{certificate}/qr.png', [CertificateQrController::class, 'qrImage'])->name('certificates.qr.image');
+
+    // Phase 6 — historical Excel import with column mapping. Each step
+    // resubmits the stored file's UUID (never a client-supplied path) plus
+    // the chosen mapping; see docs/CERTIFICATE_SYSTEM.md §Excel import.
+    Route::get('/certificates/import', [CertificateImportController::class, 'chooseTemplate'])->name('certificates.import.choose-template');
+    Route::get('/certificates/import/{template}', [CertificateImportController::class, 'showUpload'])->name('certificates.import.upload');
+    Route::post('/certificates/import/{template}/upload', [CertificateImportController::class, 'handleUpload'])->name('certificates.import.upload.store');
+    Route::post('/certificates/import/{template}/preview', [CertificateImportController::class, 'preview'])->name('certificates.import.preview');
+    Route::post('/certificates/import/{template}/errors', [CertificateImportController::class, 'errorReport'])->name('certificates.import.errors');
+    Route::post('/certificates/import/{template}/confirm', [CertificateImportController::class, 'confirm'])->name('certificates.import.confirm');
+
     Route::get('/certificates/{certificate}', [CertificateController::class, 'show'])->name('certificates.show');
     Route::get('/certificates/{certificate}/download', [CertificateController::class, 'download'])->name('certificates.download');
 

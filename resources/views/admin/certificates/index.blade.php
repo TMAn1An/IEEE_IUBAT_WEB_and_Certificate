@@ -1,13 +1,16 @@
 <x-layouts.admin title="Certificates">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap">
     <form method="GET" action="{{ route('admin.certificates.index') }}" style="display:flex;gap:8px">
-      <input type="search" name="search" value="{{ $search }}" placeholder="Search by certificate number or recipient name">
+      <input type="search" name="search" value="{{ $search }}" placeholder="Search by certificate number, recipient name, or codeword">
       <button type="submit" class="btn btn--ghost">Search</button>
       @if ($search !== '')
         <a href="{{ route('admin.certificates.index') }}" class="btn btn--ghost">Clear</a>
       @endif
     </form>
-    <a href="{{ route('admin.certificates.choose-template') }}" class="btn btn--primary">Issue certificate</a>
+    <div style="display:flex;gap:8px">
+      <a href="{{ route('admin.certificates.import.choose-template') }}" class="btn btn--ghost">Import Excel</a>
+      <a href="{{ route('admin.certificates.qr.choose-template') }}" class="btn btn--primary">Generate QR</a>
+    </div>
   </div>
 
   <div class="admin-card" style="padding:0">
@@ -16,9 +19,9 @@
         <tr>
           <th>Certificate number</th>
           <th>Recipient</th>
-          <th>Template</th>
-          <th>Issued</th>
-          <th>Issued by</th>
+          <th>Category</th>
+          <th>Codeword</th>
+          <th>Created</th>
           <th>Status</th>
           <th></th>
         </tr>
@@ -29,11 +32,12 @@
             <td><code>{{ $certificate->certificate_number }}</code></td>
             <td>{{ $certificate->recipient_name }}</td>
             <td>{{ $certificate->template->name }}</td>
+            <td><code style="font-size:.8em">{{ \Illuminate\Support\Str::limit($certificate->codeword, 12, '…') }}</code></td>
             <td>{{ $certificate->issued_at?->format('j M Y') }}</td>
-            <td>{{ $certificate->creator?->name }}</td>
             <td><span class="badge {{ $certificate->status->badgeClass() }}">{{ $certificate->status->label() }}</span></td>
-            <td style="text-align:right">
+            <td style="text-align:right;white-space:nowrap">
               <a href="{{ route('admin.certificates.show', $certificate) }}" class="btn btn--ghost btn--sm">View</a>
+              <a href="{{ route('admin.certificates.qr.image', $certificate) }}" download="{{ $certificate->certificate_number }}-qr.png" class="btn btn--ghost btn--sm">Download QR</a>
             </td>
           </tr>
         @empty
@@ -42,7 +46,7 @@
               @if ($search !== '')
                 No certificates match "{{ $search }}".
               @else
-                No certificates issued yet. <a href="{{ route('admin.certificates.choose-template') }}">Issue the first one</a>.
+                No certificates yet. <a href="{{ route('admin.certificates.qr.choose-template') }}">Generate the first one</a>.
               @endif
             </td>
           </tr>

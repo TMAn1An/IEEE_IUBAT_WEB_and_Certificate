@@ -443,3 +443,101 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   with the 6.x-vs-7.x pin reasoning; `endroid/qr-code` struck through as unneeded). Public
   verification, revocation, reissue, Excel bulk import, ZIP generation, and email sending were not
   started, per the brief's explicit stop condition.
+
+## Phase 6 — Simplified QR workflow and historical Excel import (2026-09-18)
+
+- **Scope pivot, not a rewrite**: paused the PDF designer and automatic PDF generation (Phases
+  4-5) rather than continuing them — that code, its routes, and its tests all stay in the
+  codebase and stay green. Built the actually-needed near-term production workflow instead:
+  migrate the old local QR/codeword tool (dynamic form -> codeword -> QR -> manual Canva
+  placement) into the website, plus importing the historical Excel files that tool already
+  produced. See `docs/CERTIFICATE_SYSTEM.md` §Simplified QR workflow.
+- **No schema migration needed**: `certificates.pdf_path`/`template_snapshot`/`layout_snapshot`
+  were already `nullable()` from Phase 5 — inspected first per the brief's explicit instruction,
+  confirmed already correct, so no migration was written. Both new certificate-creation paths
+  (QR-only issuance, Excel import) simply leave all three columns `null`.
+- **`SimpleCertificateService`**: a new, deliberately small service for the no-PDF issuance path —
+  reuses `CertificateNumberService` and `VerificationCodewordService` unchanged from Phase 5, skips
+  everything PDF-related entirely. Kept separate from `CertificateIssuanceService` rather than
+  adding a "skip the PDF" flag to it, since the two flows share only those two sub-services.
+- **QR as standalone PNG**: `QrCodeService` gained `pngBytes()` using TCPDF's own
+  `TCPDF2DBarcode::getBarcodePngData()` — confirmed working standalone (no PDF document needed) in
+  a spike before writing any surrounding code. Still zero new QR packages. Generated on demand per
+  request (`GET /admin/certificates/{certificate}/qr.png`), never written to disk — deterministic
+  from the verification URL, so there's nothing to persist or clean up.
+- **Admin UI**: `Admin\CertificateQrController` (`/admin/certificates/generate-qr[/{template}]`)
+  reuses Phase 5's `IssueCertificateRequest` verbatim for the dynamic form. The certificate detail
+  page now shows an inline QR preview, a "Download QR PNG" link, a copyable verification link
+  (Clipboard API), and an optional "Copy QR image" button (feature-detected, hidden where
+  unsupported — PNG download is the guaranteed path). The PDF-preview `<iframe>`/download button
+  are now conditional on `pdf_path` being set, so QR-only certificates don't show a broken PDF
+  section. Nav sidebar restructured to the brief's exact priority list: Generate QR, All
+  Certificates, Import Excel, Categories/Templates, with Bulk Generation/Batches demoted below a
+  "More" heading.
+- **Excel import package**: `phpoffice/phpspreadsheet` (direct dependency, not the
+  `maatwebsite/excel` wrapper — this project only needs a synchronous read of a few hundred rows
+  within one request, not queued export/import abstractions). No security advisories at install
+  time.
+- **Column mapping, not a fixed header assumption**: the importer never assumes an Excel file's
+  headings match this system's field labels (the brief's own examples — "Speaker Name" ->
+  Recipient Name, "Designation" -> Role, "University" -> Institution — make clear they routinely
+  won't). A mapping screen lists every column with a sample value next to a dropdown of targets
+  (every assignable field, Existing Codeword, Existing Certificate Number, Ignore column). A
+  best-effort auto-guess pre-selects obvious matches (substring/exact-label matches only, no
+  synonym dictionary) but every row stays admin-reviewable/overridable.
+- **Design bug caught in manual testing before shipping**: the first version used a separate
+  `_recipient_name` mapping pseudo-target, distinct from the recipient field's own `field_key`.
+  Consequence: `validateMapping()`'s "every required field must be mapped" check looked for the
+  recipient field's `field_key` among the submitted targets, but the admin had (correctly, per the
+  UI) selected the special `_recipient_name` target instead — so a template's own recipient field
+  could never satisfy its own required-mapping check. Fixed by removing the special target
+  entirely and treating the recipient field as a normal mappable field (matching exactly how the
+  live QR-generation form already handles it) — caught by manually running the full pipeline via
+  `tinker` against a real generated `.xlsx` before writing the automated test suite, not by the
+  tests themselves (they were written after the fix).
+- **State across upload -> mapping -> preview -> confirm without a new database table**: the
+  uploaded file is stored once as `storage/app/private/imports/{server-generated-uuid}.xlsx`.
+  Every later step carries that UUID (validated with a strict UUID regex before ever touching the
+  filesystem — never a client-supplied path) plus the chosen mapping through hidden form fields,
+  and re-derives everything else fresh from the stored file each time — confirm never trusts what
+  preview merely echoed back, it re-runs the identical validation from scratch.
+- **Existing-codeword/certificate-number migration behavior**: a non-empty mapped value is checked
+  against a permissive format pattern, then for uniqueness against both the database and every
+  other row already seen in the same file, then **preserved verbatim** if it passes — never
+  silently replaced. An empty cell means "generate a new one," identical to a row with no
+  historical value at all. This is the whole point of the import path: QR codes already printed on
+  paper years ago must keep verifying against the same codeword.
+- **Partial import, explicitly**: the brief's own preview mockup (`Imported: 147 / Skipped: 3`)
+  assumes it, and it's the correct behavior for genuinely messy historical data. Every invalid row
+  is skipped and reported (row-numbered, matching the real Excel row an admin would see), the rest
+  import normally. `CertificateImportService` processes each valid row in its own transaction, not
+  one transaction for the whole file, for the same reason.
+- **Tests** (`tests/Feature/Admin/CertificateQrGeneratorTest.php`, 8 new;
+  `tests/Feature/Admin/CertificateExcelImportTest.php`, 15 new): authorized/unauthorized access for
+  both workflows, dynamic field validation, recipient-name + data JSON storage, codeword
+  generation/uniqueness, draft/archived templates blocked from QR generation, standalone QR PNG
+  endpoint produces a real PNG, certificate detail page hides the PDF section when absent, Excel
+  upload accepted/rejected, header parsing, required-mapping enforcement, preview counts, invalid
+  dropdown rows rejected, import confirmation writes real rows, existing codeword preserved,
+  duplicate codeword rejected (both against the database and within the same file), missing
+  codeword generates a new one, existing certificate number preserved, duplicate certificate number
+  rejected, and a test that imports fresh data alongside a pre-existing Phase 5 certificate and
+  confirms the older row is completely untouched. 72 tests pass total (49 prior + 23 new), 327
+  assertions, no regressions.
+- **Pint**: clean, 114 files (3 pre-existing style issues auto-fixed in the new files).
+- **Manual QA**: full pipeline exercised via `tinker` against real service calls before the
+  automated tests were written — a QR-only certificate issued end to end (number/codeword/PNG all
+  verified valid), and a realistic 5-row `.xlsx` (missing name, duplicate codeword, valid rows)
+  imported end to end with correct valid/invalid counts and correct preserved-vs-generated
+  codeword counts. The full HTTP stack (routes, controllers, middleware, CSRF, views) is
+  additionally exercised by the automated feature tests themselves. No real-browser pass was done
+  (same limitation noted in Phases 4-5 — no headless-browser tool is available in this
+  environment); the mapping screen's dropdowns and the Clipboard-API buttons have not been
+  clicked through in an actual browser.
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md` gained §Simplified QR workflow (rationale, QR PNG
+  generation, Excel import, column mapping, row validation, import result, security) and a
+  clarifying note distinguishing it from the still-future §Bulk (Excel) generation. `docs/
+  DATABASE_DESIGN.md` and `docs/ARCHITECTURE.md` updated (no-migration-needed note, new services/
+  controllers/views, the `phpoffice/phpspreadsheet` dependency entry). The PDF designer, automatic
+  certificate generation, public verification page, revocation, reissue, and Certificate Studio
+  desktop software were not touched, per the brief's explicit stop condition.

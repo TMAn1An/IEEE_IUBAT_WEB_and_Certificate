@@ -2,12 +2,11 @@
 
 namespace App\Http\Requests\Admin;
 
-use App\Enums\TemplateFieldType;
 use App\Models\Certificate;
 use App\Models\CertificateTemplate;
+use App\Services\Certificates\TemplateFieldRules;
 use Illuminate\Contracts\Validation\Validator as ValidatorContract;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 
 /**
  * Builds validation rules dynamically from the selected template's fields —
@@ -54,21 +53,7 @@ class IssueCertificateRequest extends FormRequest
                 continue;
             }
 
-            $key = "fields.{$field->field_key}";
-            $fieldRules = [$field->is_required ? 'required' : 'nullable'];
-
-            $fieldRules = array_merge($fieldRules, match ($field->field_type) {
-                TemplateFieldType::Text => ['string', 'max:1000'],
-                TemplateFieldType::LongText => ['string', 'max:5000'],
-                TemplateFieldType::Number => ['numeric'],
-                TemplateFieldType::Date => ['date'],
-                TemplateFieldType::Dropdown => [Rule::in(
-                    collect($field->options ?? [])->filter(fn ($o) => trim((string) $o) !== '')->values()->all()
-                )],
-                default => ['string', 'max:1000'],
-            });
-
-            $rules[$key] = $fieldRules;
+            $rules["fields.{$field->field_key}"] = TemplateFieldRules::forField($field);
         }
 
         return $rules;
