@@ -11,7 +11,8 @@ use Tests\TestCase;
  * already re-runs every migration for each test class in this suite (a
  * failure there fails the whole run), so this makes the check explicit
  * rather than only implicit. Extended in Phase 3 with `is_recipient_name`,
- * Phase 4 with background metadata + system-element layout columns.
+ * Phase 4 with background metadata + system-element layout columns, Phase 5
+ * with generated-PDF/snapshot columns and the certificate number counter.
  */
 class DatabaseSchemaTest extends TestCase
 {
@@ -42,8 +43,11 @@ class DatabaseSchemaTest extends TestCase
         $this->assertTrue(Schema::hasTable('certificates'));
         $this->assertTrue(Schema::hasColumns('certificates', [
             'certificate_template_id', 'certificate_batch_id', 'certificate_number', 'codeword',
-            'recipient_name', 'data', 'status', 'issued_at', 'revoked_at', 'revocation_reason',
-            'reissued_from_id', 'created_by',
+            'recipient_name', 'data', 'pdf_path', 'template_snapshot', 'layout_snapshot', 'status',
+            'issued_at', 'revoked_at', 'revocation_reason', 'reissued_from_id', 'created_by',
         ]));
+
+        $this->assertTrue(Schema::hasTable('certificate_number_counters'));
+        $this->assertTrue(Schema::hasColumns('certificate_number_counters', ['year', 'next_sequence']));
     }
 }

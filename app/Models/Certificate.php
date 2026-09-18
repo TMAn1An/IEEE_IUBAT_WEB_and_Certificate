@@ -19,6 +19,9 @@ class Certificate extends Model
         'codeword',
         'recipient_name',
         'data',
+        'pdf_path',
+        'template_snapshot',
+        'layout_snapshot',
         'status',
         'issued_at',
         'revoked_at',
@@ -31,6 +34,8 @@ class Certificate extends Model
     {
         return [
             'data' => 'array',
+            'template_snapshot' => 'array',
+            'layout_snapshot' => 'array',
             'status' => CertificateStatus::class,
             'issued_at' => 'datetime',
             'revoked_at' => 'datetime',

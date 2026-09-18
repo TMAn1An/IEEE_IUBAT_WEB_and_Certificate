@@ -13,11 +13,6 @@ use Illuminate\Contracts\View\View;
  */
 class ComingSoonController extends Controller
 {
-    public function certificates(): View
-    {
-        return $this->comingSoon('Certificates', 'Phase 5', 'Generate a single certificate from a template and download it.');
-    }
-
     public function bulkGeneration(): View
     {
         return $this->comingSoon('Bulk Generation', 'Phase 7', 'Download an Excel template, fill it, and generate many certificates at once.');

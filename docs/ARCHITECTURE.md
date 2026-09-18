@@ -15,8 +15,8 @@ hosting without extra moving parts (no separate services, no Docker, no Node ser
 
 ## 2. Folder layout
 
-**Status**: reflects what's actually built through Phase 4. Items still marked as planned (not yet
-created) are for Phase 5 onward — see `docs/CHANGELOG.md` for what landed in which phase.
+**Status**: reflects what's actually built through Phase 5. Items still marked as planned (not yet
+created) are for Phase 6 onward — see `docs/CHANGELOG.md` for what landed in which phase.
 
 ```
 app/
@@ -33,7 +33,9 @@ app/
                                      # upload/stream (Phase 4) — both admin roles
         TemplateFieldController.php # field CRUD + move-up/move-down (Phase 3)
         TemplateDesignerController.php # designer view + save-layout (Phase 4)
-        # planned: CertificateController, BatchController (later phases)
+        CertificateController.php  # single-certificate issuance: choose template, dynamic form,
+                                     # list/search, detail, PDF download (Phase 5)
+        # planned: BatchController (Phase 7)
       VerificationController.php   # planned: public GET /verify/{codeword} (Phase 6)
     Middleware/
       EnsureUserIsActive.php       # 'active' alias — blocks a deactivated account mid-session (Phase 2)
@@ -45,16 +47,23 @@ app/
                                                         # dropdown-options, recipient-only-on-text
         UploadTemplateBackgroundRequest.php           # Phase 4 — mimes:pdf + magic-header check
         SaveTemplateLayoutRequest.php                 # Phase 4 — the designer's full save payload
-        # planned: GenerateSingleCertificateRequest, UploadBatchRequest, etc.
+        IssueCertificateRequest.php                   # Phase 5 — rules built dynamically from the
+                                                        # selected template's fields; rejects
+                                                        # unknown field keys
+        # planned: UploadBatchRequest, etc. (Phase 7)
   Policies/
     UserPolicy.php                 # Super-Admin-only user management, auto-discovered (Phase 2)
     CertificateTemplatePolicy.php  # both admin roles, auto-discovered (Phase 3); manageLayout()
                                      # ability added Phase 4 — blocks layout writes once archived
+    CertificatePolicy.php          # both admin roles, auto-discovered (Phase 5) — viewAny/view/
+                                     # create/download; no revoke/reissue ability yet (Phase 8)
   Enums/
     UserRole.php, CertificateTemplateStatus.php, TemplateFieldType.php,
     CertificateBatchStatus.php, CertificateStatus.php    # Phase 2 — see docs/DATABASE_DESIGN.md
     # TemplateFieldType::assignable() added Phase 3 — the system-fields-vs-input-fields boundary,
     # see docs/CERTIFICATE_SYSTEM.md §System fields vs. input fields
+    # CertificateStatus::GenerationFailed added Phase 5 — schema-readiness only, never written by
+    # the current synchronous issuance flow (see docs/CERTIFICATE_SYSTEM.md §Failure handling)
   Console/Commands/
     MakeAdminCommand.php           # `php artisan app:make-admin` — first production Super Admin (Phase 2)
   Models/
@@ -62,7 +71,7 @@ app/
     CertificateTemplate.php        # background/layout columns + hasBackground() added Phase 4
     TemplateField.php              # is_recipient_name cast added Phase 3
     CertificateBatch.php
-    Certificate.php
+    Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5
     # planned: VerificationLog, AuditLog (Phase 6/9)
   Services/
     SiteContentService.php   # public-site computed content (eventPhase(), headerAlert(), etc. — Phase 1)
@@ -72,10 +81,28 @@ app/
       TemplateBackgroundService.php # PDF upload/replace storage (Phase 4)
       TemplateLayoutService.php     # save-layout transaction: page size, fields, system elements,
                                      # QR-squareness enforcement, IDOR re-check (Phase 4)
-    # planned (Phase 5-8): Certificates/CertificateNumberGenerator, Certificates/CodewordGenerator,
-    # Certificates/CertificateGenerationService, Certificates/CertificateRevocationService,
-    # Pdf/CertificatePdfService, Qr/QrCodeService, Excel/ExcelTemplateExportService,
-    # Excel/ExcelImportValidationService, Excel/BulkCertificateGenerationService
+    Certificates/                # Phase 5
+      CertificateIssuanceService.php    # orchestrates issuance in one DB transaction; write-PDF-
+                                          # then-insert-then-cleanup-on-failure ordering
+      CertificateNumberService.php      # atomic, race-safe sequential certificate numbers
+      VerificationCodewordService.php   # CSPRNG codeword generation (CLAUDE.md's "verification
+                                          # token", reusing the existing `codeword` column)
+      CertificateSnapshotService.php    # builds template_snapshot/layout_snapshot at issuance
+      QrCodeService.php                 # verification URL + draws the QR via TCPDF's native
+                                          # write2DBarcode() — no new QR package
+      IssuanceResult.php                # DTO: certificate + any field-overflow warnings
+      Pdf/
+        CertificatePdfService.php       # the FPDI/TCPDF renderer
+        PdfPageBoxReader.php            # reads the real MediaBox/CropBox via FPDI's public,
+                                          # standalone PdfReader API (not the protected
+                                          # Fpdi::getPdfReader() the TCPDF import class uses)
+        PdfPageBox.php                  # llx/lly/width/height value object
+        PdfCoordinateConverter.php      # the one coordinate-conversion boundary — see
+                                          # docs/CERTIFICATE_SYSTEM.md §Coordinate system
+        CertificateFontResolver.php     # picks dejavusans vs. notosansbengali per field value
+        CertificatePdfRenderResult.php  # DTO: PDF bytes + page box + overflow warnings
+    # planned (Phase 7-8): Excel/ExcelTemplateExportService, Excel/ExcelImportValidationService,
+    # Excel/BulkCertificateGenerationService, Certificates/CertificateRevocationService
   Support/Site/
     Icons.php                # inline-SVG icon sprite, backs the @icon() Blade directive (Phase 1)
 
@@ -99,7 +126,8 @@ resources/
                    background section added Phase 4
       templates/fields/ (create, edit, and a shared _form.blade.php partial both include) — Phase 3
       templates/designer.blade.php # the visual canvas editor (Phase 4) — see docs/CERTIFICATE_SYSTEM.md
-      # planned: certificates/, batches/ (later phases)
+      certificates/ (index, choose-template, issue, show) # Phase 5 — see docs/CERTIFICATE_SYSTEM.md
+      # planned: batches/ (Phase 7)
     verify/                   # planned (Phase 6): show, not-found, revoked
 
 public/
@@ -111,11 +139,19 @@ public/
                                   # matching the rest of the admin UI (see §5)
   index.php                    # Laravel front controller (only publicly reachable PHP entry point)
 
+resources/
+  fonts/                       # Phase 5, NOT public/ -- never served directly, only embedded into
+                                 # generated PDFs server-side
+    source/NotoSansBengali-Regular.ttf, NotoSansBengali-OFL.txt  # OFL-licensed source + license
+    tcpdf/notosansbengali.{php,z,ctg.z}   # pre-converted TCPDF embedded font, committed so no font
+                                            # conversion ever runs at request time or in production
+
 database/
   migrations/
   seeders/
     DatabaseSeeder.php, AdminUserSeeder.php   # local/testing-only dev admin accounts (Phase 2)
   factories/
+    CertificateFactory.php   # Phase 5
 
 routes/
   web.php        # public site (Phase 1); verification (planned, Phase 6)
@@ -124,19 +160,17 @@ routes/
 
 storage/
   app/
-    private/      # planned: certificate-templates/{id}/, certificates/{id}.pdf, batches/{id}/*
-                   # (not used yet — no uploads/generation exist in Phase 2)
+    private/      # certificate-templates/{id}/{uuid}.pdf (Phase 4), certificates/{year}/{uuid}.pdf
+                   # (Phase 5) — both served only via authorized streaming controller routes, never
+                   # a public storage URL. batches/{id}/* still planned (Phase 7).
 
 tests/
   Feature/
-    PublicSite/            # every legacy + current URL resolves and renders expected content
-    Auth/
-    Templates/
-    Certificates/
-    Verification/
-    Excel/
-  Unit/
-    Services/
+    Admin/          # TemplateManagementTest, TemplateDesignerTest, CertificateIssuanceTest,
+                     # UserManagementTest (actual layout — grouped by admin area, not by domain
+                     # noun; see individual test files for the exact list each covers)
+    PublicSiteTest.php       # every legacy + current URL resolves and renders expected content
+    DatabaseSchemaTest.php   # explicit schema/column assertions, extended each phase
 ```
 
 ## 3. Public-site migration mapping
@@ -230,11 +264,18 @@ makes "new template, zero PHP changes" true.
 | Package | Purpose | Why this one |
 |---|---|---|
 | `laravel/framework` ^12.0 | Application framework | Required target; PHP 8.2 minimum matches production exactly |
-| `setasign/fpdi` | Import an existing PDF page as a certificate background | De facto standard for "write on top of an existing PDF" in PHP. **Open-source edition is limited to PDF ≤ 1.4** (no compressed xref streams) — must be validated against an actual Canva export before this is final; see the open question in the chat report / `docs/CERTIFICATE_SYSTEM.md` §PDF pipeline risk |
-| `tecnickphp/tcpdf` | The PDF writer FPDI imports into; draws text/QR on top | Mature, actively maintained, strong Unicode/TTF font embedding (needed for Bangla names) |
-| `endroid/qr-code` | QR generation | Actively maintained, PHP 8.1+, renders to PNG in-memory via GD (already available) — no need to persist QR files to disk |
-| `maatwebsite/excel` (PhpSpreadsheet wrapper) | Excel template export + bulk import/validation | The standard Laravel Excel package; chunked reading keeps memory bounded on shared hosting, good validation/import hooks |
+| `setasign/fpdi` ^2.6 (**added Phase 5**) | Import an existing PDF page as a certificate background | De facto standard for "write on top of an existing PDF" in PHP. Validated against the real demo Canva PDF (PDF 1.4, classic xref table) — imports cleanly, the version-ceiling risk did not materialize. See `docs/CERTIFICATE_SYSTEM.md` §PDF generation pipeline |
+| `tecnickcom/tcpdf` **pinned `^6.8`** (**added Phase 5**) | The PDF writer FPDI imports into; draws text/QR on top | Strong Unicode/TTF font embedding (needed for Bangla names). **Must stay on 6.x** — `composer require` initially resolved the newest `7.0.10`, whose own package description now reads "Deprecated legacy PDF engine... use tc-lib-pdf instead"; that release throws a fatal error on `new TCPDF()` in this environment (font loading was restructured onto a separate, incompatible package). `setasign/fpdi`'s own `composer.json` pins its dev dependency to `tcpdf: ^6.8`, confirming 6.x is the tested-compatible line. `tc-lib-pdf` (the suggested replacement) has a different architecture FPDI cannot import into — not a viable alternative for this project. See `docs/CERTIFICATE_SYSTEM.md` §PDF generation pipeline for the full story. |
+| ~~`endroid/qr-code`~~ — **not added** | ~~QR generation~~ | TCPDF (already a dependency for the reason above) bundles native 2D barcode/QR generation (`write2DBarcode()`, real vector output) — a separate QR package would duplicate functionality already present. See `docs/CERTIFICATE_SYSTEM.md` §QR code |
+| `maatwebsite/excel` (PhpSpreadsheet wrapper) | Excel template export + bulk import/validation | The standard Laravel Excel package; chunked reading keeps memory bounded on shared hosting, good validation/import hooks. Not yet added — Phase 7 |
 | `phpunit/phpunit` (dev) | Testing | **Decided in Phase 1/2** (superseding the original Pest plan below): kept whatever Laravel 12's `laravel new` scaffolded by default rather than swapping test frameworks before any real tests existed. Pest is a thin DSL over PHPUnit — revisit only if a concrete pain point with PHPUnit's syntax shows up; not worth the churn otherwise. |
+
+**Font asset, not a Composer package**: Noto Sans Bengali (SIL Open Font License) is embedded for
+Bengali-script certificate text — fetched from Google's open-source font repository, converted
+once into TCPDF's format via `TCPDF_FONTS::addTTFfont()`, and the output committed at
+`resources/fonts/tcpdf/`. Not a package because it's a static asset consumed by TCPDF at runtime,
+not a library with an API; see `docs/CERTIFICATE_SYSTEM.md` §Font strategy for the known
+complex-script-shaping limitation this choice carries.
 
 No authentication/authorization package was added — Phase 2's admin login is a hand-rolled
 `Admin\AuthController` (`Auth::attempt()`, session guard, `RateLimiter` for throttling) plus
@@ -244,12 +285,11 @@ via a plain enum column don't need a permissions package, and there's no self-se
 or password-reset flow for a starter kit to save work on. Revisit only if role/permission
 complexity grows materially beyond "two fixed roles."
 
-**Phase 4 added zero Composer packages.** `setasign/fpdi`/`tecnickphp/tcpdf`/`endroid/qr-code`
-above remain *planned only* — still not in `composer.json` — because Phase 4 never needed to parse
-or write a PDF server-side (see `docs/CERTIFICATE_SYSTEM.md` §Certificate background & visual
-layout). Two browser-only libraries were added instead, both loaded from cdnjs with a
-self-verified SRI hash, the same pattern the original site already uses for `three.js`/
-`qrcode-generator` on the HTA page (`reference/legacy-site/hta-2026.php` → carried into
+**Phase 4 added zero Composer packages** — it never needed to parse or write a PDF server-side
+(see `docs/CERTIFICATE_SYSTEM.md` §Certificate background & visual layout). Two browser-only
+libraries were added instead, both loaded from cdnjs with a self-verified SRI hash, the same
+pattern the original site already uses for `three.js`/`qrcode-generator` on the HTA page
+(`reference/legacy-site/hta-2026.php` → carried into
 `resources/views/pages/events/hta-2026.blade.php`) — not a new convention:
 
 | Library | Purpose | Why this one |

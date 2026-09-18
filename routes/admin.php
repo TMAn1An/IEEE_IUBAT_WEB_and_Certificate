@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Admin\AuthController;
+use App\Http\Controllers\Admin\CertificateController;
 use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\TemplateController;
@@ -60,10 +61,20 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::post('/templates/{template}/fields/{field}/move-up', [TemplateFieldController::class, 'moveUp'])->name('templates.fields.move-up');
     Route::post('/templates/{template}/fields/{field}/move-down', [TemplateFieldController::class, 'moveDown'])->name('templates.fields.move-down');
 
+    // Single-certificate issuance (Phase 5). No 'edit'/'destroy' -- issued
+    // certificates are immutable (see docs/CERTIFICATE_SYSTEM.md
+    // §Snapshot strategy); revoke/reissue are Phase 8. /issue must come
+    // before /{certificate} so it isn't swallowed by the model-bound route.
+    Route::get('/certificates', [CertificateController::class, 'index'])->name('certificates.index');
+    Route::get('/certificates/issue', [CertificateController::class, 'chooseTemplate'])->name('certificates.choose-template');
+    Route::get('/certificates/issue/{template}', [CertificateController::class, 'create'])->name('certificates.create');
+    Route::post('/certificates/issue/{template}', [CertificateController::class, 'store'])->name('certificates.store');
+    Route::get('/certificates/{certificate}', [CertificateController::class, 'show'])->name('certificates.show');
+    Route::get('/certificates/{certificate}/download', [CertificateController::class, 'download'])->name('certificates.download');
+
     // Functionality lands in later phases (see docs/MIGRATION_PLAN.md's
     // phase list). Real nav entries now, honest "not built yet" pages
     // rather than dead links or fake functionality.
-    Route::get('/certificates', [ComingSoonController::class, 'certificates'])->name('certificates.index');
     Route::get('/bulk-generation', [ComingSoonController::class, 'bulkGeneration'])->name('bulk-generation.index');
     Route::get('/batches', [ComingSoonController::class, 'batches'])->name('batches.index');
 });

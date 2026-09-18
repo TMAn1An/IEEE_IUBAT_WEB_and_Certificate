@@ -317,3 +317,129 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   Real certificate issuance, verification tokens, QR verification URLs, the public verification
   page, revocation, reissue, Excel bulk import, ZIP generation, and email sending were not started,
   per the brief's explicit stop condition.
+
+## Phase 5 — Single certificate generation and issuance (2026-09-18)
+
+- **Technical spike first, as required before any implementation**: installed `setasign/fpdi` +
+  `tecnickcom/tcpdf` and imported the real demo Canva certificate (fetched from the location the
+  user had saved it, since Phase 4's uploaded copy no longer existed after a later
+  `migrate:fresh`/storage cleanup). `composer require` initially resolved `tcpdf:7.0.10`, whose own
+  package description now reads "Deprecated legacy PDF engine... use tc-lib-pdf instead" — it threw
+  a fatal error (`unable to read file: helvetica.json`) on the very first `new TCPDF()` call,
+  because that release loads fonts through a separate, incompatible `tc-lib-pdf-font` package.
+  Re-pinned to `tecnickcom/tcpdf: ^6.8` (classic, self-contained font system) — confirmed as the
+  tested-compatible line by `setasign/fpdi`'s own `composer.json`, which pins its dev dependency to
+  the same range.
+- **Coordinate system, verified against the real PDF's raw bytes, not assumed**: the demo
+  certificate's actual `/MediaBox` is `[0.0 8.579974 842.25 604.07996]` — confirming Phase 4's
+  non-zero-origin finding, but also revealing the true page **height is 595.5pt**
+  (`604.07996 - 8.579974`), not the `604.08` Phase 4's manual QA notes recorded (that number was
+  the raw `ury`, never actually confirmed against a real PDF.js browser session — Phase 4 had no
+  headless browser either). FPDI's `importPage()` normalizes the imported page so its own
+  lower-left corner becomes local `(0,0)`; TCPDF's drawing API is top-left/y-down on top of that.
+  Built one central conversion service, `App\Services\Certificates\Pdf\PdfCoordinateConverter`, and
+  a standalone `PdfPageBoxReader` (using FPDI's public `PdfReader`/`PdfParser`/`StreamReader`
+  classes, not the protected `Fpdi::getPdfReader()`) so real page dimensions can be read
+  independently of building a full TCPDF document. `certificate_templates.page_width`/`page_height`
+  (the Phase 4 designer's cached columns) are never trusted for rendering — proven necessary by the
+  595.5-vs-604.08 discrepancy itself. Verified visually: text placed at raw `y=560` landed near the
+  page top, text at raw `y=20` landed flush with the true bottom edge, a marker square landed
+  exactly at its computed bottom-right position — all against the real demo PDF, rasterized with
+  Ghostscript and visually inspected.
+- **Font/Unicode strategy**: DejaVu Sans (bundled with TCPDF) renders Latin script including
+  diacritics correctly out of the box. Bengali script rendered as empty "tofu" boxes with DejaVu
+  Sans alone — fetched the open-source, OFL-licensed Noto Sans Bengali font from Google's font
+  repository, pre-converted it once into TCPDF's embedded format (`TCPDF_FONTS::addTTFfont()`), and
+  committed the output at `resources/fonts/tcpdf/` so no font conversion ever happens at request
+  time or in production. `App\Services\Certificates\Pdf\CertificateFontResolver` picks one font per
+  field value based on whether it contains Bengali codepoints. Documented limitation: TCPDF has no
+  HarfBuzz-style shaping engine, so complex Bengali conjunct clusters aren't guaranteed correct
+  ligature substitution — common names render correctly (verified), unusual ones should be
+  spot-checked; not solved further now to avoid over-engineering a problem that hasn't actually
+  occurred.
+- **QR code**: no new package. TCPDF bundles native 2D barcode generation
+  (`write2DBarcode('QRCODE,M', ...)`, real vector output) — `App\Services\Certificates\QrCodeService`
+  builds the verification URL (`{APP_URL}/certificate/verify/{codeword}`, path configurable via
+  `config/certificates.php`) and draws it directly. The public verification route/controller are
+  Phase 6 work and do not exist yet; the URL shape is defined now purely so Phase 6 never has to
+  touch or reprint an already-issued certificate.
+- **Certificate number / verification token**: `CertificateNumberService` mints
+  `IEEE-IUBAT-{year}-{6-digit sequence}` (prefix configurable) via a dedicated
+  `certificate_number_counters` table (one row per year), incremented with `SELECT ... FOR UPDATE`
+  inside the issuance transaction — race-condition safe by construction, not by retry-on-collision.
+  For what the brief calls "verification token," reused the existing `certificates.codeword` column
+  from the Phase 2 schema (already documented in CLAUDE.md as exactly this) rather than adding a
+  duplicate column — `VerificationCodewordService` generates 32 CSPRNG bytes (`random_bytes()`,
+  never `mt_rand()`), hex-encoded, retried up to 5 times against the DB unique constraint.
+- **Snapshot strategy**: two new nullable JSON columns on `certificates` — `template_snapshot`
+  (field definitions: label/key/type/options/is_recipient_name) and `layout_snapshot` (per-field
+  position/style + system-element layouts + the page dimensions actually used at render time).
+  Written once at issuance by `CertificateSnapshotService`, never touched again. Decided: the live
+  template stays fully editable even after certificates exist against it (not locked down) — the
+  snapshot is what makes historical certificates safe, not freezing the template. Verified by a
+  test that edits a field's label/position after issuance and asserts the certificate's stored
+  snapshot is unaffected.
+- **Issuance pipeline** (`CertificateIssuanceService`): validates the template is active and has a
+  background, copies the `is_recipient_name` field's value into `certificates.recipient_name`
+  directly, mints the number + codeword, renders the PDF entirely in memory (no disk/DB writes
+  possible on a render failure), then — inside one DB transaction — writes the PDF to
+  `storage/app/private/certificates/{year}/{uuid}.pdf` and inserts the `certificates` row. A
+  `catch` block deletes the just-written file if anything throws afterward (including exhausting
+  codeword retries), so a failure never leaves an orphaned file or a DB row without a matching PDF.
+  Deliberately simpler than a `status = generating` placeholder row — the flow is synchronous and
+  fast, so there's no user-visible intermediate state to protect against.
+  `CertificateStatus::GenerationFailed` stays in the enum for a possible future async path but
+  nothing in this flow writes it.
+- **Dynamic validation** (`IssueCertificateRequest`): rules built from the selected template's
+  `template_fields` (required/type/dropdown-options), plus a `withValidator()->after()` pass that
+  rejects any submitted field key not belonging to that template — catches both typos and a
+  deliberately manipulated `fields[certificate_number]` payload (certificate numbers are never
+  accepted from the client).
+- **Admin UI**: `Admin\CertificateController` (`certificates.index`/`choose-template`/`create`/
+  `store`/`show`/`download`) replaces the Phase-2 "coming soon" placeholder for Certificates.
+  Issue form generated from the template's fields (same field-type switch pattern as Phase 3's Form
+  Preview, but live). Detail page shows field values (via `template_snapshot`, so it stays correct
+  even after later template edits), an inline PDF preview `<iframe>`, and a download link — both
+  against the same policy-checked streaming route, never a public storage path. Verification
+  codeword is never shown in the normal UI. Duplicate-submission protection: POST/Redirect/GET plus
+  a client-side submit-button disable; no server-side idempotency token added on top (the brief
+  said not to over-engineer this, and a double-POST just mints two distinct, both-valid
+  certificates — not a data-corruption risk).
+- **Security**: `App\Policies\CertificatePolicy` (auto-discovered, same two-role boundary as
+  templates). Draft/archived templates rejected both in the controller and again inside
+  `CertificateIssuanceService` (defense in depth). Dropdown values re-validated server-side against
+  the template's actual configured options regardless of what the client submits. PDF
+  download/preview routes are policy-checked, never a raw storage URL.
+- **Tests** (`tests/Feature/Admin/CertificateIssuanceTest.php`, 15 new): authorized open, guest/
+  inactive blocked, draft/archived rejected, full pipeline (number format, codeword length/
+  uniqueness, PDF exists and starts with `%PDF-`, snapshots populated), required-field validation,
+  invalid dropdown rejected, unknown field key rejected, certificate number cannot be
+  client-supplied, numbers sequential and unique across two issuances, listing + search by number/
+  recipient, detail+download authorization, issued certificate unaffected by a later template edit,
+  PDF-generation failure leaves zero certificates and zero orphan files, long-text overflow
+  detected and surfaced as a warning. Uses a real FPDI-importable PDF generated by TCPDF itself as
+  the test fixture (Phase 4's hand-written minimal PDF wasn't parseable enough, since Phase 4 never
+  actually imported it) plus `Storage::fake('local')` to isolate test file writes. 49 tests pass
+  total (34 prior + 15 new), 238 assertions, no regressions. `vendor/bin/pint` clean (101 files; 2
+  pre-existing style issues fixed in the newly generated font-definition file).
+- **Manual QA**: full pipeline exercised against the real demo Canva PDF outside the automated
+  suite — created a template, uploaded the real PDF as its background, configured five fields
+  (including a Bengali-script field and a long-text field) plus certificate-number/QR layouts at
+  real demo-PDF coordinates, activated it, and issued one real certificate via
+  `CertificateIssuanceService`. Rasterized the generated PDF with Ghostscript and visually
+  confirmed: every field at its configured position, long text wrapping correctly with no
+  auto-shrink, the certificate number rendered, a structurally valid QR code (finder patterns
+  correct) at its configured box, and legible Bengali glyphs (no tofu boxes). No headless-browser
+  tool was available in this environment (same limitation as Phase 4), so the designer's real
+  drag/resize/pointer-event interactions in an actual browser, and a real phone QR scan, remain
+  open manual-QA items for the user before this ships — flagged explicitly in the Phase 5
+  completion report.
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md` gained/updated §PDF generation pipeline (replacing the old
+  "open question" framing), §Single certificate generation, §Certificate number generation,
+  §Verification codeword generation, §Snapshot strategy, §QR code, and the template-lifecycle
+  edit-after-issuance rule. `docs/DATABASE_DESIGN.md` updated with the new `certificates` columns
+  and the new `certificate_number_counters` table. `docs/ARCHITECTURE.md` updated with the new
+  services/controller/policy/views and the corrected dependency table (FPDI/TCPDF actually added,
+  with the 6.x-vs-7.x pin reasoning; `endroid/qr-code` struck through as unneeded). Public
+  verification, revocation, reissue, Excel bulk import, ZIP generation, and email sending were not
+  started, per the brief's explicit stop condition.
