@@ -23,8 +23,11 @@ certificate_templates ──< certificates >── certificate_batches
 certificates ── (self-referencing) reissued_from_id
 ```
 
-`verification_logs` and `audit_logs` (Phase 6/9) are deliberately not created yet — see
-`docs/CERTIFICATE_SYSTEM.md`. There is no `events` table; the public site's event content stays in
+`verification_logs` and `audit_logs` are deliberately not created yet — see
+`docs/CERTIFICATE_SYSTEM.md`. Public verification itself (`GET /certificate/verify/{codeword}`)
+shipped in Phase 6 without a hit/miss log table; it reads `certificates` directly (exact `codeword`
+match) and needs no schema of its own. There is no `events` table; the public site's event content
+stays in
 `config/site.php` (see `docs/ARCHITECTURE.md`). `certificate_number_counters` (Phase 5, below) is a
 small standalone table, not part of this relationship diagram — nothing references it by foreign
 key, it's only ever read/written by `CertificateNumberService`.
@@ -176,9 +179,9 @@ autocompletion + a `label()` method for display text in one place.
 
 ## Not built yet (deliberately, kept lean phase by phase)
 
-- **`verification_logs`**: privacy-conscious hit/miss log for `/verify/{codeword}` — Phase 6. The
-  public verification route/controller itself don't exist yet either — see
-  `docs/CERTIFICATE_SYSTEM.md` §QR code for why the QR's URL shape is already defined regardless.
+- **`verification_logs`**: privacy-conscious hit/miss log for `/certificate/verify/{codeword}` —
+  still future work. Public verification itself (the route, lookup, and display logic) shipped in
+  Phase 6 *without* this table; add it later if usage tracking becomes a real need.
 - **`audit_logs`**: admin action log (template created, certificate revoked, etc.) — Phase 9, unless
   a strong reason surfaces earlier.
 - Batch import/export file paths and ZIP handling — Phase 7.
@@ -186,7 +189,11 @@ autocompletion + a `label()` method for display text in one place.
   Phase 4.
 - ~~Certificate PDF storage path~~ / ~~`certificates.recipient_name` populated from a template's
   `is_recipient_name` field~~ / ~~certificate number + codeword generation~~ — done, Phase 5.
-- Revoke/reissue *behavior* (the columns/relationships exist already) — Phase 8.
+- ~~Public verification route/lookup/display~~ — done, Phase 6 (`CertificateStatus::Revoked` is now
+  actually read by that display logic; setting it is still Phase 8 work, see below).
+- Revoke/reissue *admin-facing action* (the `status`/`revoked_at`/`revocation_reason` columns and
+  the `CertificateStatus::Revoked` enum case already exist and are already read by verification) —
+  Phase 8.
 
 ## Design decisions worth recording
 

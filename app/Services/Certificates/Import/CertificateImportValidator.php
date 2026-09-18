@@ -6,6 +6,7 @@ use App\Models\Certificate;
 use App\Models\CertificateTemplate;
 use App\Models\TemplateField;
 use App\Services\Certificates\TemplateFieldRules;
+use App\Services\Certificates\VerificationCodewordService;
 use Illuminate\Support\Facades\Validator;
 
 /**
@@ -17,12 +18,12 @@ use Illuminate\Support\Facades\Validator;
 class CertificateImportValidator
 {
     /**
-     * A reasonably permissive but non-empty check — historical codeword
-     * formats from the old local tool aren't known in advance, so this
-     * rejects blanks/whitespace-only/control-characters rather than
-     * enforcing the current 64-hex-character shape new codewords get.
+     * Shared with the public verification route's constraint and
+     * VerificationCodewordService::generate()'s own output — see
+     * VerificationCodewordService::ACCEPTED_PATTERN's docblock for why one
+     * pattern serves all three.
      */
-    private const CODEWORD_PATTERN = '/^[A-Za-z0-9_-]{4,128}$/';
+    private const CODEWORD_PATTERN = '/^'.VerificationCodewordService::ACCEPTED_PATTERN.'$/';
 
     /** Similarly permissive for historical certificate-number formats (slashes, spaces, dots seen in old exports). */
     private const CERTIFICATE_NUMBER_PATTERN = '/^[\w.\/ -]{3,64}$/u';

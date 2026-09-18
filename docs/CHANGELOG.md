@@ -541,3 +541,89 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   controllers/views, the `phpoffice/phpspreadsheet` dependency entry). The PDF designer, automatic
   certificate generation, public verification page, revocation, reissue, and Certificate Studio
   desktop software were not touched, per the brief's explicit stop condition.
+
+## Phase 6 (continued) — Public certificate verification (2026-09-18)
+
+- **Route**: `GET /certificate/verify/{codeword}` (name `certificate.verify`, `routes/web.php`,
+  public — no auth, not under the `admin.` prefix). Constrained with
+  `VerificationCodewordService::ACCEPTED_PATTERN` (`[A-Za-z0-9_-]{4,128}`) — inspected the real
+  generated-codeword format (64 lowercase hex from `bin2hex(random_bytes(32))`) and the Excel
+  importer's already-permissive historical-codeword format check before choosing this, so the
+  route can never reject a legitimately preserved historical codeword. The upper bound (128) makes
+  an absurdly long junk URL 404 at the routing layer, before any query or render.
+  `throttle:60,1` (60 req/min/IP) deters enumeration without a CAPTCHA.
+- **`CertificateVerificationService`**: the one place the lookup happens — exact
+  `Certificate::where('codeword', $codeword)->first()`, never certificate ID, certificate number,
+  or fuzzy matching. Returns a `VerificationResult` DTO, never the `Certificate` model — the view
+  receives only certificate-number/recipient-name/template-name/issued-date/public-fields (and
+  only what each outcome needs), so `codeword`/`id`/`created_by`/`pdf_path`/the raw
+  `template_snapshot`/`layout_snapshot`/`data` JSON are structurally unreachable from the public
+  Blade template, not merely "not currently rendered."
+- **Status rules**: `Active` → Verified. `Revoked` → a separate response (certificate number only,
+  no recipient/dynamic data, no `revocation_reason`) — the column/enum already existed from
+  Phase 2, this display logic is new. Anything else (`Reissued`, `GenerationFailed`, or a future
+  status) → the same "Certificate Not Verified" response an unknown codeword gets, so a
+  reissued-and-superseded certificate's old codeword never keeps claiming to be valid. Verified
+  first that `SimpleCertificateService` and `CertificateImportService` both already set
+  `status: Active` on every row they create — no consistency bug found there.
+- **Public field visibility, in order**: (1) `certificates.template_snapshot` when present (Phase 5
+  PDF certificates), frozen at issuance; (2) the live template's current fields for Phase 6
+  QR-only/Excel-imported certificates (both always have a `null` snapshot, since no PDF was ever
+  rendered to snapshot anything from); (3) nothing beyond the base fields if neither resolves.
+  Documented in full in `docs/CERTIFICATE_SYSTEM.md` §Snapshot/current-template fallback logic.
+- **Bug found and fixed**: `CertificateSnapshotService::templateSnapshot()` never captured
+  `show_on_verification`/`verification_label` — a real gap, since without it a Phase 5 PDF
+  certificate's snapshot had no visibility data to read at all. Fixed; a snapshot written before
+  this fix (missing the key entirely) is treated as `show_on_verification = false`, the safer
+  default, never assumed `true`.
+- **Bug found and fixed (caught in manual curl testing, before automated tests were written)**: the
+  recipient-flagged field was rendering twice — once via the dedicated "Recipient" row, again as
+  its own dynamic field row, whenever its `show_on_verification` also happened to be `true` (a
+  common, expected configuration). Fixed by excluding the recipient field from the dynamic-field
+  list in both the snapshot and live-template resolution branches.
+- **One URL-building implementation, not three**: `QrCodeService::verificationUrlFor()` now builds
+  the URL via Laravel's `route('certificate.verify', [...])` instead of string-concatenating
+  `config('app.url')` with a path template. Every caller — the in-PDF QR, the standalone PNG, the
+  admin detail page's copy-link/"View Public Verification" buttons — already went through this one
+  method, so fixing it here fixed it everywhere at once. Removed the now-redundant
+  `config('certificates.verification_url_path')` key and its `CERTIFICATE_VERIFICATION_URL_PATH`
+  env var, since the real route makes both dead weight.
+- **Page**: `resources/views/verify/show.blade.php` — one standalone Blade file (not
+  `x-layouts.app`, not the admin layout), reusing the public site's CSS variables/fonts for brand
+  consistency without pulling in the full header/nav/footer chrome, which would be noise on a page
+  almost everyone reaches by scanning a QR code on a phone. No JavaScript required. One `@switch`
+  on `VerificationOutcome` renders all three states.
+- **Privacy/anti-caching headers**: `X-Robots-Tag: noindex, nofollow` + a matching `<meta>` tag
+  (these URLs are per-certificate secrets, never meant to be indexed) and `Cache-Control: no-store`
+  (a status shown here, e.g. Verified, can change later via revocation — never let a browser/proxy
+  cache a stale result).
+- **Admin UI**: certificate detail page gained a "View Public Verification" link next to the
+  existing "Copy link"/"Download QR PNG" buttons from earlier in Phase 6.
+- **Tests** (`tests/Feature/PublicVerificationTest.php`, 15 new): no-login-required, all three
+  certificate-creation paths (manual QR, Excel-imported with a preserved historical codeword,
+  Phase 5 PDF-path via a realistic snapshot) verify correctly, correct certificate
+  number/recipient/public-field display, hidden fields and raw JSON never appear, codeword itself
+  never appears in page content, unknown/very-long/malformed codewords handled safely (the last two
+  404 at the route layer), revoked and reissued statuses both correctly fail to show "Verified",
+  the QR service's own URL output actually resolves to a Verified page, noindex/no-store headers
+  present, and the route's throttle middleware is actually registered. One test assertion was
+  itself flawed during development (checking the page doesn't contain the certificate's raw
+  numeric ID as a substring — false-failed because "2026" in the issued date coincidentally
+  contains the digit) and was corrected to test something meaningful instead of loosened to pass.
+  87 tests pass total (72 prior + 15 new), 372 assertions, no regressions.
+- **Pint**: clean, 120 files.
+- **Manual QA**: full pipeline exercised via real HTTP requests (curl) against a live local server
+  before and after each bug fix above — a QR-only certificate's verification page, a revoked
+  certificate, an unknown codeword, and a route-rejected 500-character junk codeword were all
+  fetched and their exact rendered HTML/headers inspected. No real phone/browser QR-scan pass was
+  performed (no such tooling is available in this environment) — that remains for the user's own
+  manual QA pass per the brief's §19.
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md`'s old speculative "Verification page" section (which
+  described a `/verify/{codeword}` path that never shipped, a `verification_logs` table that still
+  doesn't exist, and treated `reissued` as displayable-as-historical rather than Not Verified) was
+  replaced with §Public verification describing what was actually built, plus a new
+  §Snapshot/current-template fallback logic subsection. §Revocation and §Reissue updated to
+  reflect that the display logic now exists even though the admin-facing action still doesn't.
+  `docs/ARCHITECTURE.md` updated (new `VerificationController`/`Verification/` service files, the
+  corrected data-flow diagram's Verification block, dependency-table note). `docs/DATABASE_DESIGN.md`
+  updated (no new table needed; `CertificateStatus::Revoked` now actually consumed).

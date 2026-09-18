@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\PageController;
+use App\Http\Controllers\VerificationController;
+use App\Services\Certificates\VerificationCodewordService;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -23,6 +25,22 @@ Route::get('/membership', [PageController::class, 'membership'])->name('membersh
 
 Route::get('/event/becithcon-2026', [EventController::class, 'becithcon2026'])->name('events.becithcon2026');
 Route::get('/event/hta-2026', [EventController::class, 'hta2026'])->name('events.hta2026');
+
+/*
+|--------------------------------------------------------------------------
+| Public certificate verification (Phase 6)
+|--------------------------------------------------------------------------
+| No auth, no admin layout -- see docs/CERTIFICATE_SYSTEM.md §Public
+| verification. The `where()` pattern is shared with the codeword generator
+| and the Excel importer's format check (VerificationCodewordService::
+| ACCEPTED_PATTERN) so this route never rejects a legitimately-preserved
+| historical codeword. throttle:60,1 (60 req/min/IP) deters brute-force
+| codeword enumeration without being annoying for normal QR scanning.
+*/
+Route::get('/certificate/verify/{codeword}', [VerificationController::class, 'show'])
+    ->where('codeword', VerificationCodewordService::ACCEPTED_PATTERN)
+    ->middleware('throttle:60,1')
+    ->name('certificate.verify');
 
 /*
 |--------------------------------------------------------------------------

@@ -23,17 +23,18 @@ use TCPDF2DBarcode;
 class QrCodeService
 {
     /**
-     * The public verification page/route is Phase 6 work and does not exist
-     * yet. This URL is still generated now (per the Phase 5 brief) so
-     * issued certificates never need their QR reprinted once Phase 6 adds
-     * the matching route — only the codeword (already unique, already
-     * CSPRNG-generated) has to match.
+     * The single URL-building implementation every caller uses (the QR
+     * PNG/in-PDF drawing here, the admin certificate detail page's copy
+     * link, and the manual QA phone-scan flow) — never build this string
+     * any other way. Uses Laravel's own `route()` helper against the public
+     * `certificate.verify` route (routes/web.php), so it always resolves
+     * against the real `APP_URL` and can never drift from the route it's
+     * meant to match. See docs/CERTIFICATE_SYSTEM.md §QR generator
+     * integration.
      */
     public function verificationUrlFor(Certificate $certificate): string
     {
-        $path = str_replace('{token}', $certificate->codeword, config('certificates.verification_url_path'));
-
-        return rtrim(config('app.url'), '/').$path;
+        return route('certificate.verify', ['codeword' => $certificate->codeword]);
     }
 
     /** @param  array{x: float, y: float, width: float, height: float}  $tcpdfBox  Already converted — see PdfCoordinateConverter. */

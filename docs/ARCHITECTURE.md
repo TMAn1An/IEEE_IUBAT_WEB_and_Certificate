@@ -7,8 +7,8 @@ One Laravel 12 application serving two audiences:
 1. **Public website** — the existing IEEE IUBAT Student Branch site, migrated to Blade with
    preserved design/URLs/content.
 2. **Certificate system** — admin-only, behind auth: template management, single + bulk
-   certificate generation, and a public `/verify/{codeword}` endpoint that anyone (including an
-   anonymous QR scan) can hit.
+   certificate generation, and a public `/certificate/verify/{codeword}` endpoint (implemented
+   Phase 6) that anyone, including an anonymous QR scan, can hit.
 
 Both share one codebase, one database, one deployment, because that's what fits on cPanel shared
 hosting without extra moving parts (no separate services, no Docker, no Node server at runtime).
@@ -42,7 +42,9 @@ app/
         CertificateImportController.php # Phase 6: historical Excel import (upload -> map -> preview
                                           # -> confirm), see docs/CERTIFICATE_SYSTEM.md §Excel import
         # planned: BatchController (Phase 7)
-      VerificationController.php   # planned: public GET /verify/{codeword} (Phase 6)
+      VerificationController.php   # Phase 6 — public GET /certificate/verify/{codeword}. Lives at
+                                     # App\Http\Controllers, NOT App\Http\Controllers\Admin -- this
+                                     # is the one certificate-related controller with no auth at all
     Middleware/
       EnsureUserIsActive.php       # 'active' alias — blocks a deactivated account mid-session (Phase 2)
     Requests/
@@ -81,7 +83,8 @@ app/
     TemplateField.php              # is_recipient_name cast added Phase 3
     CertificateBatch.php
     Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5
-    # planned: VerificationLog, AuditLog (Phase 6/9)
+    # planned: VerificationLog, AuditLog (still future -- public verification itself shipped
+    # Phase 6 without a hit/miss log model; see docs/CERTIFICATE_SYSTEM.md §Public verification)
   Services/
     SiteContentService.php   # public-site computed content (eventPhase(), headerAlert(), etc. — Phase 1)
     Templates/
@@ -119,6 +122,17 @@ app/
         CertificateImportService.php    # writes valid rows to the database, one transaction per
                                           # row (partial import is intentional here)
         ImportRowResult.php, ImportValidationResult.php, ImportSummary.php   # DTOs
+      Verification/                # Phase 6 — public verification
+        CertificateVerificationService.php  # the one place the public route looks anything up;
+                                              # exact codeword match, then resolves status +
+                                              # public-field visibility (snapshot -> live template
+                                              # -> nothing) — see docs/CERTIFICATE_SYSTEM.md
+                                              # §Snapshot/current-template fallback logic
+        VerificationResult.php              # DTO the view actually receives -- NOT the Certificate
+                                              # model, so codeword/id/pdf_path/template_snapshot/
+                                              # data etc. are structurally unreachable from the
+                                              # public Blade view, not just "not rendered"
+        VerificationOutcome.php, PublicField.php   # enum + small DTO
       Pdf/                          # Phase 5 (paused, still present/tested)
         CertificatePdfService.php       # the FPDI/TCPDF renderer
         PdfPageBoxReader.php            # reads the real MediaBox/CropBox via FPDI's public,
@@ -159,7 +173,12 @@ resources/
         qr/ (choose-template, create)         # Phase 6, primary workflow
         import/ (choose-template, upload, mapping, preview, result)   # Phase 6
       # planned: batches/ (Phase 7)
-    verify/                   # planned (Phase 6): show, not-found, revoked
+    verify/
+      show.blade.php   # Phase 6 — ONE view, all three outcomes (verified/revoked/not-found)
+                         # via a @switch on VerificationOutcome, not three separate files.
+                         # Standalone HTML document, not x-layouts.app or the admin layout —
+                         # reuses the public site's CSS variables/fonts for brand consistency
+                         # without the full header/nav/footer chrome
 
 public/
   assets/                      # the EXISTING public-site css/js/img/pdf, copied across as-is
@@ -229,6 +248,13 @@ layout using Vite-built assets + Alpine.js.
 
 ## 4. Certificate system data flow
 
+**Note**: this diagram is the original pre-implementation sketch from Phase 0/2 and predates the
+real class names — kept for the high-level flow, which is still accurate, but see
+`docs/CERTIFICATE_SYSTEM.md` for what each phase actually built (e.g. `CertificateGenerationService`
+below became `CertificateIssuanceService` + `SimpleCertificateService`; `CertificateNumberGenerator`/
+`CodewordGenerator` became `CertificateNumberService`/`VerificationCodewordService`). The
+Verification block specifically has been corrected below to match the real Phase 6 implementation.
+
 ```
 Template PDF (Canva export)
    -> upload -> stored in storage/app/private/certificate-templates/{id}/original.pdf
@@ -262,14 +288,18 @@ Bulk certificates:
    -> ZIP of generated PDFs assembled for download, cleaned up by a scheduled command after a
       configured retention window (see docs/DEPLOYMENT_CPANEL.md §Cron)
 
-Verification:
-   GET /verify/{codeword}
-   -> Certificate::where('codeword', $codeword)->first()
-   -> not found -> "Certificate Not Verified" (no data leaked)
-   -> status=revoked -> "No longer valid" (+ no personal data beyond that fact)
-   -> status=active/reissued-superseded -> render only template_fields where
-      show_on_verification=true, plus certificate_number and issued_at
-   -> VerificationLog row recorded (result + timestamp only — no fingerprinting)
+Verification (implemented Phase 6, real behavior -- see docs/CERTIFICATE_SYSTEM.md §Public verification):
+   GET /certificate/verify/{codeword}  (public, routes/web.php, throttle:60,1)
+   -> CertificateVerificationService::verify(): Certificate::where('codeword', $codeword)->first()
+   -> not found, OR status is anything other than active/revoked (e.g. reissued) ->
+      "Certificate Not Verified" (no data leaked)
+   -> status=revoked -> "Certificate Revoked" (certificate number only, no personal/dynamic data)
+   -> status=active -> "Certificate Verified": certificate_number, recipient_name, template name,
+      issued_at, plus dynamic fields where show_on_verification=true (source: template_snapshot
+      if present, else the live template's current fields -- see §Snapshot/current-template
+      fallback logic). View receives a VerificationResult DTO, never the Certificate model.
+   -> no VerificationLog / hit-miss audit table was built (still future work, out of scope for
+      "public verification" specifically)
 ```
 
 The same four services (`CertificateGenerationService`, `CertificatePdfService`, `QrCodeService`,

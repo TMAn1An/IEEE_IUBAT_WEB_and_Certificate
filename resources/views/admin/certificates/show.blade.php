@@ -60,7 +60,8 @@
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
           <a href="{{ route('admin.certificates.qr.image', $certificate) }}" download="{{ $certificate->certificate_number }}-qr.png" class="btn btn--primary btn--sm">Download QR PNG</a>
-          <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy link</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy Verification Link</button>
+          <a href="{{ $verificationUrl }}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">View Public Verification</a>
           <button type="button" class="btn btn--ghost btn--sm" id="copy-image-btn">Copy QR image</button>
           <a href="{{ route('admin.certificates.qr.create', $certificate->template) }}" class="btn btn--ghost btn--sm">Create another</a>
         </div>

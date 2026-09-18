@@ -36,6 +36,15 @@ class CertificateSnapshotService
                 'is_required' => $field->is_required,
                 'is_recipient_name' => $field->is_recipient_name,
                 'options' => $field->options,
+                // Added Phase 6 (public verification): a field's public-visibility
+                // flag as it stood AT ISSUANCE TIME, not the live template's
+                // current value -- see docs/CERTIFICATE_SYSTEM.md §Public field
+                // visibility logic for why this must be frozen too, not just
+                // label/type. CertificateVerificationService treats a snapshot
+                // predating this fix (missing this key) as show_on_verification
+                // = false, the safer default -- see that service's docblock.
+                'show_on_verification' => $field->show_on_verification,
+                'verification_label' => $field->verification_label,
             ])->values()->all(),
         ];
     }

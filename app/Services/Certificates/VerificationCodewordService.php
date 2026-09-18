@@ -17,6 +17,21 @@ class VerificationCodewordService
 {
     private const LENGTH_BYTES = 32; // -> 64 hex characters
 
+    /**
+     * The accepted codeword shape, shared by three call sites so it can
+     * never drift between them: the public verification route's `where()`
+     * constraint, the Excel importer's format check
+     * (App\Services\Certificates\Import\CertificateImportValidator), and
+     * this class's own `generate()` output. Deliberately broader than "64
+     * hex characters" (what `generate()` produces) — historical codewords
+     * preserved from the old local tool via Excel import
+     * (docs/CERTIFICATE_SYSTEM.md §Excel import) may be shorter/different,
+     * and the route must accept those too. The route bounds the *maximum*
+     * length so a malicious giant URL can't cause expensive processing; the
+     * minimum rules out empty/single-character junk.
+     */
+    public const ACCEPTED_PATTERN = '[A-Za-z0-9_-]{4,128}';
+
     public function generate(): string
     {
         return bin2hex(random_bytes(self::LENGTH_BYTES));
