@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BECITHCON 2026 Codeword & QR Generator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="page-shell">
+        <header class="topbar">
+            <div>
+                <div class="eyebrow">IEEE BECITHCON 2026</div>
+                <h1>Codeword & QR Generator</h1>
+                <p class="subtext">Create a unique codeword, save the record to Excel, and generate a QR code.</p>
+            </div>
+            {% if result %}
+                <a class="button secondary" href="{{ url_for('download_excel', filename=result.excel_filename) }}">Download Excel</a>
+            {% endif %}
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="messages">
+                    {% for category, message in messages %}
+                        <div class="message {{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <main class="grid">
+            <section class="card">
+                <h2>Create Entry</h2>
+
+                <form action="{{ url_for('generate') }}" method="POST" id="generatorForm">
+                    <label class="check-row">
+                        <input type="checkbox" id="include_conference" name="include_conference" checked onchange="toggleConferenceField()">
+                        Include conference/event in QR
+                    </label>
+                    <div id="conferenceField">
+                    <label for="conference_type">Conference or Event</label>
+                    <select id="conference_type" name="conference_type" onchange="toggleConferenceName()">
+                        <option value="">Select Type</option>
+                    </select>
+                    <div class="option-tools">
+                        <input id="conference_type_add" type="text" placeholder="Add type option">
+                        <button type="button" class="small-button" onclick="addConferenceType()">Add</button>
+                        <button type="button" class="small-button danger" onclick="removeConferenceType()">Remove selected</button>
+                    </div>
+
+                    <div id="conferenceNameWrap" style="display: none;">
+                        <label for="conference_select">Select Name</label>
+                        <select id="conference_select" name="conference_select">
+                            <option value="">Select Name</option>
+                        </select>
+                        <div class="option-tools">
+                            <input id="conference_option_add" type="text" placeholder="Add conference name">
+                            <button type="button" class="small-button" onclick="addOption('conference')">Add</button>
+                            <button type="button" class="small-button danger" onclick="removeSelectedOption('conference')">Remove selected</button>
+                        </div>
+                    </div>
+
+                    </div>
+
+                    <label for="role_select">Role</label>
+                    <select id="role_select" name="role_select" required>
+                        <option value="">Select Role</option>
+                    </select>
+                    <div class="option-tools">
+                        <input id="role_option_add" type="text" placeholder="Add role option">
+                        <button type="button" class="small-button" onclick="addOption('role')">Add</button>
+                        <button type="button" class="small-button danger" onclick="removeSelectedOption('role')">Remove selected</button>
+                    </div>
+
+                    <label for="name">Name</label>
+                    <input
+                        id="name"
+                        name="name"
+                        type="text"
+                        placeholder="Example: Dr. Hadaate Ullah"
+                        required
+                        maxlength="160"
+                    >
+
+                    <label class="check-row">
+                        <input type="checkbox" id="include_session" name="include_session" onchange="toggleSessionField()">
+                        Include session in QR
+                    </label>
+                    <div id="sessionField" style="display: none;">
+                    <label for="session">Session</label>
+                    <textarea
+                        id="session"
+                        name="session"
+                        rows="5"
+                        placeholder="Example: Technical Session – TS-1: BSP1: Biomedical Signal Processing -1"
+                        
+                        maxlength="500"
+                    ></textarea>
+                    </div>
+
+                    <button class="button primary full" type="submit">Generate Codeword + QR</button>
+                </form>
+            </section>
+
+            <section class="card result-card">
+                <h2>Generated Result</h2>
+
+                {% if result %}
+                    <div class="result-layout">
+                        <div class="result-info">
+                            <div class="info-row">
+                                {% if result.conference %}
+                                    <span>Conference/Event</span>
+                                    <strong>{{ result.conference }}</strong>
+                                {% endif %}
+                            </div>
+                            <div class="info-row">
+                                <span>Role</span>
+                                <strong>{{ result.role }}</strong>
+                            </div>
+                            <div class="info-row">
+                                <span>Name</span>
+                                <strong>{{ result.name }}</strong>
+                            </div>
+                            <div class="info-row">
+                                {% if result.session %}
+                                    <span>Session</span>
+                                    <strong>{{ result.session }}</strong>
+                                {% endif %}
+                            </div>
+
+                            <div class="code-box">
+                                <span>Codeword</span>
+                                <strong id="codeword">{{ result.codeword }}</strong>
+                                <button type="button" class="copy-btn" onclick="copyCodeword()">Copy</button>
+                            </div>
+
+                            <div class="success-note">Saved to {{ result.excel_filename }}</div>
+                        </div>
+
+                        <div class="qr-panel">
+                            <img
+                                src="{{ url_for('static', filename='qr/' + result.qr_filename) }}"
+                                alt="Generated QR Code"
+                                class="qr-image"
+                            >
+                            <a
+                                class="button secondary full"
+                                href="{{ url_for('download_qr', filename=result.qr_filename) }}"
+                            >
+                                Download QR
+                            </a>
+                        </div>
+                    </div>
+                {% else %}
+                    <div class="empty-state">
+                        <div class="qr-placeholder"></div>
+                        <p>Your generated QR code and codeword will appear here.</p>
+                    </div>
+                {% endif %}
+            </section>
+        </main>
+
+        <section class="card recent-card">
+            <div class="section-heading">
+                <div>
+                    <h2>Recent Entries</h2>
+                    <p>Last 10 records saved in the Excel file.</p>
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SL</th>
+                            <th>Role</th>
+                            <th>Name</th>
+                            <th>Session</th>
+                            <th>Codeword</th>
+                            <th>Created</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if recent_records %}
+                            {% for row in recent_records %}
+                                <tr>
+                                    <td>{{ row.sl }}</td>
+                                    <td>{{ row.role }}</td>
+                                    <td>{{ row.name }}</td>
+                                    <td>{{ row.session }}</td>
+                                    <td><code>{{ row.codeword }}</code></td>
+                                    <td>{{ row.created_at }}</td>
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="6" class="empty-cell">No records yet.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const defaultOptions = {
+            role: {{ preset_roles | tojson }},
+            Conference: {{ conference_options | tojson }},
+            Event: {{ event_options | tojson }}
+        };
+        const defaultConferenceTypes = ["Conference", "Event"];
+
+        function getConferenceTypes() {
+            const saved = localStorage.getItem("qr_conference_types");
+            if (!saved) return defaultConferenceTypes.slice();
+            try {
+                return JSON.parse(saved).filter(function (value) { return value !== "Other"; });
+            } catch (error) {
+                return defaultConferenceTypes.slice();
+            }
+        }
+
+        function populateConferenceTypes() {
+            const select = document.getElementById("conference_type");
+            const selected = select.value;
+            select.innerHTML = '<option value="">Select Type</option>';
+            getConferenceTypes().forEach(function (type) {
+                const option = document.createElement("option");
+                option.value = type;
+                option.textContent = type;
+                select.appendChild(option);
+            });
+            if (getConferenceTypes().includes(selected)) {
+                select.value = selected;
+            }
+        }
+
+        function addConferenceType() {
+            const input = document.getElementById("conference_type_add");
+            const value = input.value.trim();
+            if (!value) return;
+            const types = getConferenceTypes();
+            if (!types.some(function (type) { return type.toLowerCase() === value.toLowerCase(); })) {
+                types.splice(types.length - 1, 0, value);
+                localStorage.setItem("qr_conference_types", JSON.stringify(types));
+            }
+            input.value = "";
+            populateConferenceTypes();
+            document.getElementById("conference_type").value = value;
+            toggleConferenceName();
+        }
+
+        function removeConferenceType() {
+            const select = document.getElementById("conference_type");
+            const value = select.value;
+            if (!value) return;
+            const types = getConferenceTypes().filter(function (type) { return type !== value; });
+            localStorage.setItem("qr_conference_types", JSON.stringify(types));
+            populateConferenceTypes();
+            toggleConferenceName();
+        }
+
+        function getOptions(key) {
+            const saved = localStorage.getItem("qr_options_" + key);
+            const fallback = (defaultOptions[key] || []).filter(function (value) { return value !== "Other"; });
+            if (!saved) return fallback;
+            try {
+                return JSON.parse(saved).filter(function (value) { return value !== "Other"; });
+            } catch (error) {
+                return fallback;
+            }
+        }
+
+        function saveOptions(key, options) {
+            localStorage.setItem("qr_options_" + key, JSON.stringify(options));
+        }
+
+        function populateSelect(select, options, includePlaceholder) {
+            select.innerHTML = includePlaceholder ? '<option value="">Select Name</option>' : '<option value="">Select Role</option>';
+            options.forEach(function (value) {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = value;
+                select.appendChild(option);
+            });
+        }
+
+        function addOption(field) {
+            const input = document.getElementById(field + "_option_add");
+            const value = input.value.trim();
+            if (!value) return;
+
+            const key = field === "conference" ? document.getElementById("conference_type").value : "role";
+            if (!key) return;
+            const options = getOptions(key);
+            if (!options.some(function (option) { return option.toLowerCase() === value.toLowerCase(); })) {
+                options.push(value);
+                saveOptions(key, options);
+            }
+            input.value = "";
+            if (field === "role") {
+                populateSelect(document.getElementById("role_select"), getOptions("role"), false);
+            } else {
+                toggleConferenceName();
+            }
+        }
+
+        function removeSelectedOption(field) {
+            const select = document.getElementById(field === "role" ? "role_select" : "conference_select");
+            const value = select.value;
+            const key = field === "conference" ? document.getElementById("conference_type").value : "role";
+            if (!value || !key) return;
+            const options = getOptions(key).filter(function (option) { return option !== value; });
+            saveOptions(key, options);
+            if (field === "role") {
+                populateSelect(select, options, false);
+            } else {
+                toggleConferenceName();
+            }
+        }
+
+        function copyCodeword() {
+            const code = document.getElementById("codeword");
+            if (!code) return;
+            navigator.clipboard.writeText(code.innerText);
+        }
+
+        function toggleConferenceName() {
+            const typeSelect = document.getElementById("conference_type");
+            const nameWrap = document.getElementById("conferenceNameWrap");
+            const nameSelect = document.getElementById("conference_select");
+            const selectedType = typeSelect.value;
+
+            populateSelect(nameSelect, getOptions(selectedType), true);
+
+            nameWrap.style.display = selectedType ? "block" : "none";
+            nameSelect.required = Boolean(selectedType);
+        }
+
+        function toggleConferenceField() {
+            const included = document.getElementById("include_conference").checked;
+            const field = document.getElementById("conferenceField");
+            const typeSelect = document.getElementById("conference_type");
+            field.style.display = included ? "block" : "none";
+            typeSelect.required = included;
+            if (!included) {
+                typeSelect.value = "";
+                toggleConferenceName();
+            }
+        }
+
+        function toggleSessionField() {
+            const included = document.getElementById("include_session").checked;
+            const field = document.getElementById("sessionField");
+            const session = document.getElementById("session");
+            field.style.display = included ? "block" : "none";
+            if (!included) session.value = "";
+        }
+
+        function rememberFormValues() {
+            const form = document.getElementById("generatorForm");
+            form.querySelectorAll("input, select, textarea").forEach(function (field) {
+                if (!field.name) return;
+                const value = field.type === "checkbox" ? field.checked : field.value;
+                localStorage.setItem("qr_form_" + field.name, JSON.stringify(value));
+            });
+        }
+
+        function restoreFormValue(name) {
+            const field = document.querySelector("[name='" + name + "']");
+            const saved = localStorage.getItem("qr_form_" + name);
+            if (!field || saved === null) return;
+            try {
+                const value = JSON.parse(saved);
+                if (field.type === "checkbox") {
+                    field.checked = value;
+                } else {
+                    field.value = value;
+                }
+            } catch (error) {
+                localStorage.removeItem("qr_form_" + name);
+            }
+        }
+
+        function restoreFormValues() {
+            restoreFormValue("include_conference");
+            toggleConferenceField();
+
+            restoreFormValue("conference_type");
+            toggleConferenceName();
+            restoreFormValue("conference_select");
+
+            restoreFormValue("role_select");
+            restoreFormValue("name");
+            restoreFormValue("include_session");
+            toggleSessionField();
+            restoreFormValue("session");
+        }
+
+        window.onload = function () {
+            populateConferenceTypes();
+            populateSelect(document.getElementById("role_select"), getOptions("role"), false);
+            toggleConferenceName();
+            toggleConferenceField();
+            toggleSessionField();
+            restoreFormValues();
+            document.getElementById("generatorForm").addEventListener("input", rememberFormValues);
+            document.getElementById("generatorForm").addEventListener("change", rememberFormValues);
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+Flask==3.1.1
+openpyxl==3.1.5
+qrcode[pil]==8.2
+Pillow==11.3.0
