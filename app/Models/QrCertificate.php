@@ -6,10 +6,19 @@ use App\Enums\QrCertificateStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * SoftDeletes (added for controlled deletion — see
+ * docs/CERTIFICATE_SYSTEM.md §Controlled deletion): the default query
+ * builder — every list/records/verification lookup in this codebase —
+ * automatically excludes a trashed row via Eloquent's own global scope.
+ * The ONLY code path that ever sets `deleted_at` is
+ * App\Services\Deletion\DeletionRequestService::approve().
+ */
 class QrCertificate extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'qr_category_id',

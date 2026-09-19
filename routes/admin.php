@@ -1,9 +1,11 @@
 <?php
 
+use App\Http\Controllers\Admin\AuditLogController;
 use App\Http\Controllers\Admin\AuthController;
 use App\Http\Controllers\Admin\CertificateController;
 use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
+use App\Http\Controllers\Admin\DeletionRequestController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
@@ -74,11 +76,25 @@ Route::middleware(['auth', 'active'])->group(function () {
     // certificates are immutable (§Snapshot strategy); revoke/reissue are
     // Phase 8.
     Route::get('/certificates', [CertificateController::class, 'index'])->name('certificates.index');
+    // Must be registered before the {certificate}-bound routes below, or
+    // "deleted" would be parsed as a certificate id. Read-only, super_admin
+    // only — see docs/CERTIFICATE_SYSTEM.md §Admin lists.
+    Route::get('/certificates/deleted', [CertificateController::class, 'deleted'])->name('certificates.deleted');
     Route::get('/certificates/issue', [CertificateController::class, 'chooseTemplate'])->name('certificates.choose-template');
     Route::get('/certificates/issue/{template}', [CertificateController::class, 'create'])->name('certificates.create');
     Route::post('/certificates/issue/{template}', [CertificateController::class, 'store'])->name('certificates.store');
-    Route::get('/certificates/{certificate}', [CertificateController::class, 'show'])->name('certificates.show');
+    // withTrashed(): a soft-deleted certificate's detail page still
+    // resolves (rather than 404ing) so its "Record Deleted / Completed at"
+    // state can be shown -- see docs/CERTIFICATE_SYSTEM.md §Record detail
+    // UI. Every OTHER certificate route (index, download, edit-adjacent
+    // actions) stays on the default trashed-excluding binding.
+    Route::get('/certificates/{certificate}', [CertificateController::class, 'show'])->name('certificates.show')->withTrashed();
     Route::get('/certificates/{certificate}/download', [CertificateController::class, 'download'])->name('certificates.download');
+    // Deliberately no DELETE /certificates/{certificate} route anywhere in
+    // this file -- see §CORE RULE in docs/CERTIFICATE_SYSTEM.md §Controlled
+    // deletion. The only path to a soft-deleted certificate is the
+    // request/review workflow below.
+    Route::post('/certificates/{certificate}/request-deletion', [DeletionRequestController::class, 'requestForCertificate'])->name('certificates.request-deletion');
 
     // The simple QR tool — fully independent of CertificateTemplate/the PDF
     // designer/activation lifecycle. See docs/CERTIFICATE_SYSTEM.md §Simple
@@ -106,8 +122,15 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/options/conference-options/remove', [QrOptionsController::class, 'removeConferenceOption'])->name('options.conference-options.remove');
 
         Route::get('/records', [QrRecordsController::class, 'index'])->name('records.index');
-        Route::get('/records/{certificate}', [QrRecordsController::class, 'show'])->name('records.show');
+        // Must be registered before the {certificate}-bound routes below --
+        // same reasoning as certificates.deleted above.
+        Route::get('/records/deleted', [QrRecordsController::class, 'deleted'])->name('records.deleted');
+        // withTrashed() -- see the identical comment on certificates.show above.
+        Route::get('/records/{certificate}', [QrRecordsController::class, 'show'])->name('records.show')->withTrashed();
         Route::get('/records/{certificate}/qr.png', [QrGenerateController::class, 'qrImage'])->name('records.qr-image');
+        // No DELETE route here either -- same §CORE RULE as the advanced
+        // certificates group above.
+        Route::post('/records/{certificate}/request-deletion', [DeletionRequestController::class, 'requestForQrCertificate'])->name('records.request-deletion');
 
         // Auto-created Event Type + Event Name + Role combinations — see
         // QrGroupService and docs/CERTIFICATE_SYSTEM.md §Simple QR tool:
@@ -146,6 +169,20 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/categories/{category}/fields/{field}/move-up', [QrCategoryFieldController::class, 'moveUp'])->name('categories.fields.move-up');
         Route::post('/categories/{category}/fields/{field}/move-down', [QrCategoryFieldController::class, 'moveDown'])->name('categories.fields.move-down');
     });
+
+    // Controlled deletion — request -> Super Admin review -> approve/reject.
+    // Covers both simple QR records and advanced certificates through the
+    // one safe DeletableRecordType enum mapping. See
+    // docs/CERTIFICATE_SYSTEM.md §Controlled deletion. Both request-
+    // deletion POST routes live above, next to the record type they
+    // target; only the review queue itself lives here.
+    Route::get('/deletion-requests', [DeletionRequestController::class, 'index'])->name('deletion-requests.index');
+    Route::post('/deletion-requests/{deletionRequest}/approve', [DeletionRequestController::class, 'approve'])->name('deletion-requests.approve');
+    Route::post('/deletion-requests/{deletionRequest}/reject', [DeletionRequestController::class, 'reject'])->name('deletion-requests.reject');
+
+    // Read-only audit trail -- no edit/delete route exists anywhere for
+    // this resource, on purpose. See App\Policies\AuditLogPolicy.
+    Route::get('/logbook', [AuditLogController::class, 'index'])->name('logbook.index');
 
     // Functionality lands in later phases (see docs/MIGRATION_PLAN.md's
     // phase list). Real nav entries now, honest "not built yet" pages

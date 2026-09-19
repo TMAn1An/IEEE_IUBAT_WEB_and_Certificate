@@ -3,7 +3,7 @@
 MySQL/MariaDB, via Laravel migrations only — never hand-created in phpMyAdmin except the database
 and database user themselves (`docs/DEPLOYMENT_CPANEL.md`).
 
-**Status**: implemented through Phase 6. Two genuinely independent schema groups now exist side by
+**Status**: implemented through Phase 7. Two genuinely independent schema groups now exist side by
 side: the **advanced system** (`certificate_templates`/`template_fields`/`certificate_batches`/
 `certificates`, Phase 2-5, PDF-path, paused as the primary workflow) and the **simple QR tool**
 (`qr_categories`/`qr_category_fields`/`qr_certificates`, Phase 6, rebuilt after inspecting the real
@@ -25,7 +25,17 @@ certificates ── (self-referencing) reissued_from_id
 qr_categories ──< qr_category_fields
 qr_categories ──< qr_certificates
 qr_groups ──< qr_certificates
+
+users ──< certificate_deletion_requests (requested_by, reviewed_by)
+certificate_deletion_requests ──< audit_logs (deletion_request_id, nullable)
+users ──< audit_logs (actor_id)
 ```
+
+`certificate_deletion_requests`/`audit_logs` (Phase 7 — see `docs/CERTIFICATE_SYSTEM.md`
+§Controlled deletion) point at EITHER `qr_certificates` OR `certificates` via a
+(`record_type`, `record_id`) pair, not a single FK — `record_type` is a string backed by
+`App\Enums\DeletableRecordType`, never a raw client-supplied class name. `qr_certificates` and
+`certificates` both gained a `deleted_at` column (Laravel `SoftDeletes`) in this phase.
 
 `qr_groups` has no foreign key to `qr_categories` or `CertificateTemplate` — it's an orthogonal,
 automatically-populated concept (Event Type + Event Name + Role), not a schema owner. See
@@ -152,6 +162,10 @@ Indexed: unique(`codeword`), unique(`certificate_number`), `status`, plus the au
 Laravel adds for each `foreignId()`/`constrained()` column (`certificate_template_id`,
 `certificate_batch_id`, `reissued_from_id`, `created_by`).
 
+`deleted_at` (Phase 7, `SoftDeletes`) — see §Controlled deletion in
+`docs/CERTIFICATE_SYSTEM.md`. Only ever set by
+`App\Services\Deletion\DeletionRequestService::approve()`.
+
 Reissue mechanics (model/schema ready, behavior not implemented yet): original row's `status`
 becomes `reissued` (never deleted); a new row is inserted with a fresh `certificate_number`/
 `codeword` and `reissued_from_id` pointing at the original. `Certificate::reissuedFrom()` /
@@ -234,6 +248,8 @@ system) this table does not snapshot field definitions at issuance at all; publi
 is always resolved from the category's live fields. See `docs/CERTIFICATE_SYSTEM.md` §No snapshot
 for the reasoning.
 
+`deleted_at` (Phase 7, `SoftDeletes`) — identical reasoning to `certificates.deleted_at` above.
+
 ## `qr_groups`
 
 Restores the old tool's automatic per-Excel-file separation (one file per Event Type + Conference
@@ -272,6 +288,49 @@ Unique constraint on `qr_conference_options`: (`qr_conference_type_id`, `name`).
 option never touches `qr_certificates` — that table stores the resolved name as a plain string in
 `event_name`/`data`, with no foreign key back to either table.
 
+## `certificate_deletion_requests` — Phase 7
+
+See `docs/CERTIFICATE_SYSTEM.md` §Controlled deletion for the full request -> review ->
+approve/reject workflow this table drives.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | bigint PK | |
+| record_type | string, cast to `App\Enums\DeletableRecordType` (`qr_certificate`, `certificate`) | never a raw client-supplied class name — see the enum's own docblock |
+| record_id | unsigned bigint, no single FK | points into `qr_certificates` or `certificates` depending on `record_type`; existence/trashed-state re-checked in `DeletionRequestService`, not enforced by a DB constraint (can't — it's one of two different tables) |
+| requested_by | FK -> `users.id`, `restrictOnDelete` | |
+| reason | text | required — "Wrong participant name", "Duplicate record", "Test data", etc. |
+| status | string, cast to `App\Enums\DeletionRequestStatus` (`pending`, `approved`, `rejected`, `completed`), default `pending` | |
+| reviewed_by | FK -> `users.id`, nullable, `nullOnDelete` | |
+| review_note | text, nullable | |
+| requested_at / reviewed_at / completed_at | timestamp, nullable except `requested_at` | |
+| created_at / updated_at | timestamps | |
+
+Indexed: (`record_type`, `record_id`, `status`) — backs the "only one pending request per record"
+service-level check (`DeletionRequestService::request()`, `lockForUpdate()` inside a transaction;
+MySQL has no partial/conditional unique index to express this at the schema level).
+
+## `audit_logs` — Phase 7, append-only
+
+No route/policy in this codebase ever updates or deletes a row here — see
+`App\Policies\AuditLogPolicy` and `docs/CERTIFICATE_SYSTEM.md` §Logbook immutability.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | bigint PK | |
+| event_type | string, cast to `App\Enums\AuditEventType` (`deletion_requested`, `deletion_approved`, `deletion_rejected`, `record_soft_deleted`) | |
+| record_type | string, cast to `App\Enums\DeletableRecordType` | same safe mapping as `certificate_deletion_requests.record_type` |
+| record_id | unsigned bigint, no single FK | same reasoning as `certificate_deletion_requests.record_id` |
+| actor_id | FK -> `users.id`, `restrictOnDelete` | |
+| actor_role | string | a snapshot of the actor's role AT THE TIME of the action — a later role change never rewrites what an old entry says |
+| deletion_request_id | FK -> `certificate_deletion_requests.id`, nullable, `nullOnDelete` | |
+| summary | string | short, human-readable |
+| snapshot | JSON, nullable, cast `array` | populated ONLY on `record_soft_deleted` — see §Deletion snapshot in `docs/CERTIFICATE_SYSTEM.md`. Never PDF/QR image bytes or secrets |
+| metadata | JSON, nullable, cast `array` | lightweight extra context for the other three event types (e.g. the request's `reason`, a reject's `review_note`) |
+| created_at | timestamp, **no `updated_at`** | `App\Models\AuditLog::UPDATED_AT = null` |
+
+Indexed: (`record_type`, `record_id`), `event_type`, `actor_id`.
+
 ## Enums (`App\Enums\*`)
 
 Every `status`/`role`/`field_type` column is a plain `string` at the database level, cast to a PHP
@@ -287,6 +346,9 @@ autocompletion + a `label()` method for display text in one place.
 - `CertificateStatus`: `Active`, `Revoked`, `Reissued`, `GenerationFailed`
 - `QrCategoryFieldType`: `Text`, `LongText`, `Number`, `Date`, `Dropdown` (simple QR tool)
 - `QrCertificateStatus`: `Active`, `Revoked` (simple QR tool)
+- `DeletableRecordType`: `QrCertificate`, `Certificate` (Phase 7 — the safe record-type mapping)
+- `DeletionRequestStatus`: `Pending`, `Approved`, `Rejected`, `Completed` (Phase 7)
+- `AuditEventType`: `DeletionRequested`, `DeletionApproved`, `DeletionRejected`, `RecordSoftDeleted` (Phase 7)
 
 ## Not built yet (deliberately, kept lean phase by phase)
 

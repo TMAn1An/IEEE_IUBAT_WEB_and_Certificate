@@ -61,6 +61,13 @@ app/
                                           # layout) -- exists for future categories; the main page
                                           # doesn't expose picking one, per explicit instruction
           QrCategoryFieldController.php  # field CRUD + move-up/move-down within a category
+        DeletionRequestController.php  # Phase 7 -- request/index/approve/reject. requestForQr*()/
+                                         # requestForCertificate() are model-bound per record type
+                                         # (DeletableRecordType hard-coded server-side, never read
+                                         # from request input) -- see docs/CERTIFICATE_SYSTEM.md
+                                         # §Controlled deletion
+        AuditLogController.php         # Phase 7 -- read-only Logbook. index() ONLY -- no store/
+                                         # update/destroy method exists, on purpose
         # planned: BatchController (Phase 7)
       VerificationController.php   # Phase 6 — public GET /certificate/verify/{codeword}. Lives at
                                      # App\Http\Controllers, NOT App\Http\Controllers\Admin -- this
@@ -90,14 +97,23 @@ app/
                                                         # QrCategory, as of the grouping feature)
         StoreQrCategoryRequest.php, UpdateQrCategoryRequest.php             # Phase 6
         StoreQrCategoryFieldRequest.php, UpdateQrCategoryFieldRequest.php   # Phase 6
+        RequestDeletionRequest.php                    # Phase 7 -- reason required; authorize()
+                                                        # checks DeletionRequestPolicy::create()
+        RejectDeletionRequestRequest.php               # Phase 7 -- optional review_note; authorize()
+                                                        # checks DeletionRequestPolicy::review()
         # planned: UploadBatchRequest, etc. (Phase 7)
   Policies/
     UserPolicy.php                 # Super-Admin-only user management, auto-discovered (Phase 2)
     CertificateTemplatePolicy.php  # both admin roles, auto-discovered (Phase 3); manageLayout()
                                      # ability added Phase 4 — blocks layout writes once archived
     CertificatePolicy.php          # both admin roles, auto-discovered (Phase 5) — viewAny/view/
-                                     # create/download; no revoke/reissue ability yet (Phase 8)
-    QrCategoryPolicy.php, QrCertificatePolicy.php   # Phase 6 — same two-role boundary, auto-discovered
+                                     # create/download; no revoke/reissue ability yet (Phase 8).
+                                     # viewDeleted() added Phase 7 -- super_admin only
+    QrCategoryPolicy.php, QrCertificatePolicy.php   # Phase 6 — same two-role boundary, auto-discovered.
+                                                      # QrCertificatePolicy gained viewDeleted() Phase 7
+    DeletionRequestPolicy.php      # Phase 7 -- create() both roles; review()/viewAny() super_admin only
+    AuditLogPolicy.php             # Phase 7 -- viewAny() super_admin only; deliberately no create/
+                                     # update/delete ability defined at all
   Enums/
     UserRole.php, CertificateTemplateStatus.php, TemplateFieldType.php,
     CertificateBatchStatus.php, CertificateStatus.php    # Phase 2 — see docs/DATABASE_DESIGN.md
@@ -107,6 +123,11 @@ app/
     # the current synchronous issuance flow (see docs/CERTIFICATE_SYSTEM.md §Failure handling)
     QrCategoryFieldType.php    # Phase 6 — text/long_text/number/date/dropdown only, no PDF-related cases
     QrCertificateStatus.php    # Phase 6 — Active/Revoked only, no Reissued/GenerationFailed
+    DeletableRecordType.php    # Phase 7 -- the ONLY safe record_type mapping (qr_certificate |
+                                 # certificate -> model class), never a raw client-supplied name
+    DeletionRequestStatus.php  # Phase 7 -- pending/approved/rejected/completed
+    AuditEventType.php         # Phase 7 -- deletion_requested/deletion_approved/deletion_rejected/
+                                 # record_soft_deleted
   Console/Commands/
     MakeAdminCommand.php           # `php artisan app:make-admin` — first production Super Admin (Phase 2)
   Models/
@@ -114,17 +135,30 @@ app/
     CertificateTemplate.php        # background/layout columns + hasBackground() added Phase 4
     TemplateField.php              # is_recipient_name cast added Phase 3
     CertificateBatch.php
-    Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5
+    Certificate.php                 # pdf_path/template_snapshot/layout_snapshot added Phase 5;
+                                      # SoftDeletes added Phase 7 (deleted_at)
     QrCategory.php, QrCategoryField.php, QrCertificate.php   # Phase 6 — the simple QR tool's own
-                                                               # models, no FK to any of the above
+                                                               # models, no FK to any of the above.
+                                                               # QrCertificate gained SoftDeletes
+                                                               # (deleted_at) and qr_group_id Phase 7/6
     QrGroup.php                    # Phase 6 (grouping) -- auto-created Event Type + Event Name +
                                      # Role combination; no FK to QrCategory or CertificateTemplate
     QrConferenceType.php, QrConferenceOption.php   # Phase 6 -- persisted role/conference option
                                                      # lists, replacing the old tool's localStorage
-    # planned: VerificationLog, AuditLog (still future -- public verification itself shipped
-    # Phase 6 without a hit/miss log model; see docs/CERTIFICATE_SYSTEM.md §Public verification)
+    DeletionRequest.php            # Phase 7 -- certificate_deletion_requests. record() resolves the
+                                     # actual QrCertificate/Certificate via the safe DeletableRecordType
+                                     # mapping, withTrashed() (the record is usually already deleted
+                                     # by the time anyone looks at a completed request again)
+    AuditLog.php                   # Phase 7 -- audit_logs. Append-only (UPDATED_AT = null) -- see
+                                     # docs/CERTIFICATE_SYSTEM.md §Logbook immutability
   Services/
     SiteContentService.php   # public-site computed content (eventPhase(), headerAlert(), etc. — Phase 1)
+    Deletion/
+      DeletionRequestService.php  # Phase 7 -- the ONLY path to a soft-delete. request()/approve()/
+                                    # reject(), each in a DB::transaction() with lockForUpdate()
+                                    # re-checks. approve() builds the compact deletion snapshot and
+                                    # writes both a deletion_approved and a record_soft_deleted audit
+                                    # entry -- see docs/CERTIFICATE_SYSTEM.md §Controlled deletion
     Templates/
       TemplateService.php        # slug generation, activation validation gate (Phase 3)
       TemplateFieldService.php   # field-key rules, recipient exclusivity, reordering (Phase 3)
@@ -244,16 +278,24 @@ resources/
       templates/designer.blade.php # the visual canvas editor (Phase 4) — see docs/CERTIFICATE_SYSTEM.md
       certificates/
         index, choose-template, issue, show   # Phase 5 (PDF path, paused/advanced) — see docs/CERTIFICATE_SYSTEM.md
+        deleted.blade.php          # Phase 7 -- read-only "Deleted Certificates", super_admin only
       qr-tool/                     # Phase 6, primary workflow — fully independent of certificates/ above
         tool.blade.php             # THE old-tool-parity page -- Create Entry + Generated Result +
                                      # Recent Entries, all in one file, recreating
                                      # IEEEQRCODEGENERATOR-main/templates/index.html's actual layout
         records/ (index, show)     # the full searchable list (secondary to tool.blade.php's own
                                      # inline "Recent Entries")
+        records/deleted.blade.php  # Phase 7 -- read-only "Deleted Records", super_admin only
         groups/ (index, show)       # Phase 6 (grouping) -- list auto-created groups + record
                                      # counts; per-group records list with Import/Export actions
         import/ (choose-group, upload, mapping, preview, result)   # group-based (Phase 6, grouping)
         categories/ (index, create, edit, fields/create, fields/edit, fields/_form.blade.php)
+      deletion-requests/index.blade.php   # Phase 7 -- Super Admin review queue, Approve/Reject
+      audit-logs/index.blade.php          # Phase 7 -- read-only Logbook, filterable
+      components/admin/deletion-request-panel.blade.php   # Phase 7 -- shared between the QR record
+                                                             # and advanced certificate detail pages
+                                                             # so the request/pending/rejected UI
+                                                             # never drifts between the two
       # planned: batches/ (Phase 7)
     verify/
       show.blade.php   # Phase 6 — ONE view, all three outcomes (verified/revoked/not-found)

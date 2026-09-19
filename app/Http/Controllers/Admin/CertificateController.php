@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Enums\CertificateTemplateStatus;
+use App\Enums\DeletableRecordType;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\IssueCertificateRequest;
 use App\Models\Certificate;
 use App\Models\CertificateTemplate;
+use App\Models\DeletionRequest;
 use App\Services\Certificates\CertificateIssuanceService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -85,12 +87,26 @@ class CertificateController extends Controller
             ->with('status', $status);
     }
 
+    /** See Admin\QrTool\QrRecordsController::deleted() — identical reasoning. */
+    public function deleted(): View
+    {
+        $this->authorize('viewDeleted', Certificate::class);
+
+        $certificates = Certificate::onlyTrashed()
+            ->with('template')
+            ->latest('deleted_at')
+            ->paginate(20);
+
+        return view('admin.certificates.deleted', ['certificates' => $certificates]);
+    }
+
     public function show(Certificate $certificate): View
     {
         $this->authorize('view', $certificate);
 
         return view('admin.certificates.show', [
             'certificate' => $certificate->load('template', 'creator'),
+            'deletionRequest' => DeletionRequest::latestFor(DeletableRecordType::Certificate, $certificate->id),
         ]);
     }
 

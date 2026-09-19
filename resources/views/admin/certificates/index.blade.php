@@ -7,7 +7,12 @@
         <a href="{{ route('admin.certificates.index') }}" class="btn btn--ghost">Clear</a>
       @endif
     </form>
-    <a href="{{ route('admin.certificates.choose-template') }}" class="btn btn--primary">Issue certificate</a>
+    <div style="display:flex;gap:8px">
+      @can('viewDeleted', \App\Models\Certificate::class)
+        <a href="{{ route('admin.certificates.deleted') }}" class="btn btn--ghost">Deleted Certificates</a>
+      @endcan
+      <a href="{{ route('admin.certificates.choose-template') }}" class="btn btn--primary">Issue certificate</a>
+    </div>
   </div>
 
   <div class="admin-card" style="padding:0">

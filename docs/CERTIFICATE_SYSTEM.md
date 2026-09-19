@@ -1093,6 +1093,128 @@ value is already shown via the dedicated "Recipient" row; including it again as 
 too (its own `show_on_verification` value is often also `true`) produced a visibly duplicated name
 in manual testing before this exclusion was added.
 
+## Controlled deletion — implemented Phase 7
+
+No certificate or QR record is ever deleted directly from the frontend — not even by a Super
+Admin. Deletion always follows: **Staff/Admin requests deletion -> Super Admin reviews -> approves
+(soft-deletes the record) or rejects (record untouched)**. Covers both independent record types
+(`QrCertificate` and `Certificate`) through one safe mapping enum, one service, one audit table.
+
+### Soft delete
+
+`QrCertificate` and `Certificate` both use Laravel's `SoftDeletes` trait (`deleted_at` columns
+added via two small, additive migrations — no existing column touched). Because every list/
+records/verification query in this codebase already goes through the plain `Model::query()`
+builder, Eloquent's own global scope means a soft-deleted row is **automatically** excluded from:
+normal Records/Certificates lists, the "Recent Entries" panel, Excel export, Excel-import
+duplicate checks, and `CertificateVerificationService`'s codeword lookup (so a deleted record's
+old QR shows "Certificate Not Verified", not "Verified"). The row itself — including its
+`codeword`/`certificate_number` — remains physically in the database; nothing is ever hard-deleted
+by the normal application. A soft-deleted record's own detail page (`/admin/.../records/{id}`,
+`/admin/certificates/{id}`) is the one route explicitly allowed to resolve a trashed row
+(`Route::withTrashed()`) so it can show a "Record Deleted" state instead of a plain 404.
+
+### `certificate_deletion_requests`
+
+`id, record_type, record_id, requested_by, reason, status, reviewed_by, review_note, requested_at,
+reviewed_at, completed_at, timestamps`. `record_type` is a string backed by
+`App\Enums\DeletableRecordType` (`qr_certificate` | `certificate`) — **never** a raw model class
+name accepted from a request. The two "Request Deletion" routes are model-bound per record type
+(`POST /admin/qr-tool/records/{certificate}/request-deletion`,
+`POST /admin/certificates/{certificate}/request-deletion`); `DeletableRecordType` is hard-coded in
+each controller method, so a client can never submit an arbitrary `record_type` string at all —
+the safety property is structural, not a validation rule that could be bypassed.
+
+Status lifecycle: `pending` -> `approved` -> `completed` (approval flow, both transitions happen
+inside the same DB transaction as the actual soft-delete — see below), or `pending` -> `rejected`
+(record untouched, a fresh request may be submitted again later).
+
+### `App\Services\Deletion\DeletionRequestService` — the one path to a soft-delete
+
+- `request()` — re-confirms the record exists and isn't already deleted, row-locks the
+  `(record_type, record_id, pending)` slice inside a transaction to block a duplicate pending
+  request (MySQL has no partial/conditional unique index for "only one pending row per record", so
+  this is enforced at the service layer, not the schema), creates the request, logs
+  `deletion_requested` (lightweight — reason only, no snapshot).
+- `approve()` — re-checks the reviewer is `super_admin` (defense in depth; the controller already
+  gates this via `DeletionRequestPolicy::review()`), re-locks and re-confirms the request is still
+  `pending`, re-confirms the target record still exists and isn't already deleted, builds a compact
+  snapshot, marks the request `approved`, **soft-deletes the record**, marks the request
+  `completed`, and writes two separate audit events (`deletion_approved` without a snapshot,
+  `record_soft_deleted` with one) — matching the brief's "one meaningful snapshot at actual
+  deletion, lightweight metadata elsewhere." All of this runs inside one `DB::transaction()`.
+- `reject()` — re-locks and re-confirms `pending`, marks `rejected` with the reviewer/timestamp/
+  optional note, logs `deletion_rejected`. The target record is never touched.
+
+### Deletion snapshot — compact, historical only
+
+For a `QrCertificate`: `recipient_name, codeword, event_type (via its QrGroup), event_name, role,
+session, created_at, status`. For a `Certificate`: `certificate_number, recipient_name, codeword,
+certificate_template_id, template_name, issued_at, status`. Deliberately excludes anything binary
+(QR PNG bytes, PDF bytes) or secret (passwords, tokens) — see
+`DeletionRequestService::buildSnapshot()`.
+
+### `audit_logs` — append-only
+
+`id, event_type, record_type, record_id, actor_id, actor_role, deletion_request_id, summary,
+snapshot, metadata, created_at` — **no `updated_at`** (`AuditLog::UPDATED_AT = null`, Laravel's
+documented way to signal a model that's never modified after creation). `actor_role` snapshots the
+actor's role AT THE TIME of the action, so a later role change can never rewrite what an old entry
+says the actor's authority was. Four event types: `deletion_requested`, `deletion_approved`,
+`deletion_rejected`, `record_soft_deleted`.
+
+**Immutable from the frontend, enforced in the backend, not just by hiding buttons**:
+`App\Policies\AuditLogPolicy` defines only `viewAny()` (`super_admin` only) — no `create`/`update`/
+`delete` ability exists on that policy at all, and no route in `routes/admin.php` points at
+anything but the read-only `GET /admin/logbook` index. Laravel's Gate denies any ability with no
+matching policy method by default, so this is a real, tested boundary
+(`test_audit_log_has_no_frontend_update_or_delete_route`), not an absent button that a direct
+request could still reach.
+
+### Authorization
+
+`App\Policies\DeletionRequestPolicy`: `create()` — both `super_admin` and `certificate_manager`
+(same two-role boundary as everywhere else in this project). `review()` (approve/reject) —
+`super_admin` only. `viewAny()` (the full review queue) — `super_admin` only; `view()` (a single
+request's status, e.g. on a record's detail page) — the reviewer or the staff member who requested
+it. There is no `delete()`/`update()` ability on this policy either — a request is only ever
+transitioned by `DeletionRequestService`, never edited or removed once created.
+
+**Self-approval**: with only one `super_admin` account typically provisioned at this stage, a
+Super Admin approving their own deletion request is currently allowed — `assertReviewer()` only
+checks the reviewer's role, not whether they differ from the requester. This is a **documented,
+temporary limitation**, not an oversight. The preferred future rule — a request created by one
+Super Admin should be approved by a *different* Super Admin — isn't enforced yet because the
+project doesn't yet have a clean multi-admin assignment/rotation concept to hang that rule on; see
+`docs/CHANGELOG.md`'s entry for this phase.
+
+### Direct-delete prevention
+
+No `DELETE`/destroy route exists anywhere for `QrCertificate` or `Certificate` — verified directly
+(`Route::has('admin.qr.records.destroy')`/`admin.certificates.destroy` are both false, and a raw
+`DELETE` request to either record's own show-page URL returns `405`, since no route registers that
+method there). Enforced at three layers, not just one: **routes** (no destroy route exists),
+**policies** (`QrCertificatePolicy`/`CertificatePolicy` have no `delete()` ability at all), and the
+**service layer** (`QrCertificate`/`Certificate` are never called with `->delete()`/`->forceDelete()`
+anywhere in the codebase except inside `DeletionRequestService::approve()`, itself only reachable
+after an approved request).
+
+### Admin lists / "Deleted Records"
+
+Normal Records/Certificates lists exclude soft-deleted rows automatically (the global scope, not
+extra query code). A separate, explicitly read-only "Deleted Records" / "Deleted Certificates" view
+exists for `super_admin` (`QrCertificatePolicy::viewDeleted()`/`CertificatePolicy::viewDeleted()`)
+— no Restore action yet, per the brief's explicit "keep it read-only for this phase."
+
+### Data retention
+
+Soft-deleted records stay in the primary database indefinitely — no automatic permanent-deletion
+job exists or is planned for this phase. QR images are still generated on demand from the
+codeword, never stored as files. PDF files stay in `storage/app/private`, unaffected by this
+feature. Audit logs stay lightweight (a snapshot only at the one `record_soft_deleted` event per
+deletion, not on every event). If the database becomes very large later, old soft-deleted records
+may be archived through a future offline/admin-maintenance process — not built now.
+
 ## Revocation
 
 **Not built as an admin workflow in Phase 6** — no button, no form, no route to actually set a
@@ -1101,8 +1223,10 @@ state, because the `status` enum case and the `revoked_at`/`revocation_reason` c
 existed from Phase 2: if a certificate's `status` is ever `revoked` (by any means — currently only
 directly in the database), `/certificate/verify/{codeword}` correctly shows "Certificate Revoked"
 rather than "Certificate Verified", with no recipient/dynamic data and no `revocation_reason`
-exposed. The actual admin-facing revoke action (who can do it, a required reason, `audit_logs`
-integration) is still Phase 8 work.
+exposed. The actual admin-facing revoke action (who can do it, a required reason, a broader
+`audit_logs` integration covering revoke/reissue too, not just deletion) is still Phase 8 work —
+see §Controlled deletion above for the `audit_logs` table that already exists today, scoped to the
+deletion workflow only.
 
 ## Reissue
 
@@ -1116,7 +1240,10 @@ integration) is still Phase 8 work.
   "superseded" message (that copy/behavior can be refined in Phase 8), but the important safety
   property already holds: the original codeword can never silently keep showing "Verified" or
   start showing the new certificate's data.
-- Logged to `audit_logs`, linking both records.
+- Still Phase 8 work, like Revocation above — not built yet. When it is, it should log to the
+  `audit_logs` table §Controlled deletion introduced (that table already exists and is
+  general-purpose; reissue/revoke would just add their own `AuditEventType` cases rather than a
+  second logging mechanism), linking both records.
 
 ## Duplicate control
 

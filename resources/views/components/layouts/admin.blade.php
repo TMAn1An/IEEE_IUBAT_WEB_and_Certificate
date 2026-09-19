@@ -32,6 +32,11 @@
       @can('viewAny', \App\Models\User::class)
         <li><a href="{{ route('admin.users.index') }}" class="{{ request()->routeIs('admin.users.*') ? 'is-active' : '' }}">Users</a></li>
       @endcan
+      @can('viewAny', \App\Models\DeletionRequest::class)
+        <li class="admin-nav__heading">Governance</li>
+        <li><a href="{{ route('admin.deletion-requests.index') }}" class="{{ request()->routeIs('admin.deletion-requests.*') ? 'is-active' : '' }}">Deletion Requests</a></li>
+        <li><a href="{{ route('admin.logbook.index') }}" class="{{ request()->routeIs('admin.logbook.*') ? 'is-active' : '' }}">Logbook</a></li>
+      @endcan
     </ul>
     <div class="admin-sidebar__foot">
       {{ auth()->user()->name }}<br>

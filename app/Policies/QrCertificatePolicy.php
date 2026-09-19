@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Enums\UserRole;
 use App\Models\QrCertificate;
 use App\Models\User;
 
@@ -21,5 +22,16 @@ class QrCertificatePolicy
     public function create(User $user): bool
     {
         return true;
+    }
+
+    /**
+     * The read-only "Deleted Records" list — super_admin only. See
+     * docs/CERTIFICATE_SYSTEM.md §Admin lists / §Data retention. No
+     * `delete()` ability exists anywhere on this policy: a record can only
+     * ever be soft-deleted via App\Services\Deletion\DeletionRequestService.
+     */
+    public function viewDeleted(User $user): bool
+    {
+        return $user->role === UserRole::SuperAdmin;
     }
 }

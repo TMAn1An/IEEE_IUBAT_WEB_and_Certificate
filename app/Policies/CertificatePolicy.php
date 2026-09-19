@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Enums\UserRole;
 use App\Models\Certificate;
 use App\Models\User;
 
@@ -30,5 +31,11 @@ class CertificatePolicy
     public function download(User $user, Certificate $certificate): bool
     {
         return true;
+    }
+
+    /** See App\Policies\QrCertificatePolicy::viewDeleted() — identical reasoning. */
+    public function viewDeleted(User $user): bool
+    {
+        return $user->role === UserRole::SuperAdmin;
     }
 }

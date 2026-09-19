@@ -8,6 +8,9 @@
       @endif
     </form>
     <div style="display:flex;gap:8px">
+      @can('viewDeleted', \App\Models\QrCertificate::class)
+        <a href="{{ route('admin.qr.records.deleted') }}" class="btn btn--ghost">Deleted Records</a>
+      @endcan
       <a href="{{ route('admin.qr.import.choose-group') }}" class="btn btn--ghost">Import Excel</a>
       <a href="{{ route('admin.qr.generate.show') }}" class="btn btn--primary">Generate QR</a>
     </div>

@@ -860,3 +860,85 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   handling, §Excel export, and §Excel import rewritten for group-scoping; §Known differences and
   §Public verification updated. `docs/DATABASE_DESIGN.md` — new `qr_groups` section, entity
   diagram and `qr_certificates` table updated for `qr_group_id`.
+
+## Phase 7 — Controlled deletion with soft delete and an immutable audit trail (2026-09-19)
+
+- **Core rule implemented**: no certificate/QR record can be deleted directly from the frontend —
+  not even by a Super Admin. Deletion is always Staff/Admin request -> Super Admin review ->
+  approve (soft-deletes) or reject (record untouched). See docs/CERTIFICATE_SYSTEM.md §Controlled
+  deletion for the full writeup.
+- **Soft delete**: `SoftDeletes` added to `QrCertificate` and `Certificate` via two small additive
+  migrations (`deleted_at` only — no existing column touched). Because every list/verification
+  query already used the plain `Model::query()` builder, Eloquent's own global scope means a
+  trashed row is automatically excluded from Records/Certificates lists, Excel export, Excel-import
+  duplicate checks, and public verification (`CertificateVerificationService` needed zero code
+  changes). A soft-deleted record's own detail page is the one route allowed to still resolve a
+  trashed row (`Route::withTrashed()`), so it can show a "Record Deleted" state instead of a 404.
+- **New tables**: `certificate_deletion_requests` (`record_type` backed by the new
+  `App\Enums\DeletableRecordType` enum — `qr_certificate`|`certificate`, never a raw class name
+  accepted from a request; `record_id`, `requested_by`, `reason`, `status`, `reviewed_by`,
+  `review_note`, `requested_at`/`reviewed_at`/`completed_at`) and `audit_logs` (append-only —
+  `AuditLog::UPDATED_AT = null`; `event_type`, `record_type`, `record_id`, `actor_id`, `actor_role`
+  — a snapshot of the actor's role at the time, `deletion_request_id`, `summary`, `snapshot` JSON,
+  `metadata` JSON).
+- **`App\Services\Deletion\DeletionRequestService`** is the ONLY path by which a record can ever be
+  soft-deleted — `request()`/`approve()`/`reject()`, each wrapped in a `DB::transaction()` with
+  `lockForUpdate()` re-checks (blocks a duplicate pending request, a double-approval, a
+  reject-after-completion, and a request against an already-deleted record). `approve()` builds a
+  compact snapshot (recipient/codeword/event/role/session/created_at/status for a QR record;
+  certificate number/recipient/codeword/template/issued date/status for an advanced certificate —
+  never PDF/QR image bytes or secrets) and writes it to exactly one `record_soft_deleted` audit
+  entry; every other event (`deletion_requested`, `deletion_approved`, `deletion_rejected`) logs
+  lightweight metadata only, per the brief's explicit "one meaningful snapshot at actual deletion."
+- **New policies**: `DeletionRequestPolicy` (`create` — both `super_admin`/`certificate_manager`;
+  `review` i.e. approve/reject, and `viewAny` the full queue — `super_admin` only) and
+  `AuditLogPolicy` (`viewAny` only, `super_admin` — deliberately no `create`/`update`/`delete`
+  ability defined at all, matching that no route anywhere could reach one). `QrCertificatePolicy`/
+  `CertificatePolicy` gained a `viewDeleted()` ability (`super_admin` only) for the new read-only
+  "Deleted Records"/"Deleted Certificates" views — no Restore action built yet, per the brief.
+- **New admin UI**: a shared `<x-admin.deletion-request-panel>` Blade component (used by both the
+  QR record and advanced certificate detail pages, so the request/pending/rejected states never
+  drift between the two record types) renders "Request Deletion" / "Pending" / "Rejected +
+  Request Deletion Again" / (nothing — the record-deleted banner takes over). New
+  `/admin/deletion-requests` review queue (Approve/Reject, `super_admin` only) and
+  `/admin/logbook` (read-only, filterable by date range/action/actor/codeword — no edit or delete
+  action anywhere on the page, enforced by both the missing route and the missing policy ability).
+- **Direct-delete prevention verified, not just assumed**: no `DELETE`/destroy route exists for
+  either record type (`Route::has(...)` false for both); a raw `DELETE` to either record's own
+  show-page URL returns `405` (the URI pattern is registered for GET, just not DELETE); neither
+  policy has a `delete()` ability; `->delete()`/`->forceDelete()` is called on these two models in
+  exactly one place in the whole codebase (`DeletionRequestService::approve()`).
+- **Self-approval limitation documented, not hidden**: with typically only one `super_admin`
+  account provisioned, that account can approve its own request today — `assertReviewer()` only
+  checks the role, not requester-vs-reviewer identity. The preferred future rule (a different
+  Super Admin must approve) isn't enforced yet — no clean multi-admin rotation concept exists to
+  hang it on. See docs/CERTIFICATE_SYSTEM.md §Controlled deletion §Authorization.
+- **Bug caught before it shipped**: both new controllers (`DeletionRequestController`,
+  `AuditLogController`) initially omitted `use App\Http\Controllers\Controller;`, so every route
+  through them threw a fatal "class not found" error — caught immediately by the first full test
+  run (23 of 25 new tests failed with that exact error), fixed by adding the missing import to
+  both files.
+- **Tests**: new `tests/Feature/Admin/ControlledDeletionTest.php` (25 tests — who-can-request,
+  reason-required, duplicate-pending-blocked, manager-cannot-approve/reject, approval soft-deletes
+  both record types, soft-deleted records no longer verify (both types), excluded from normal
+  lists, rejection leaves the record active and still verifying, direct-delete is structurally
+  impossible, every lifecycle event is logged with a real audit-log row, the deletion snapshot's
+  actual field values, the Logbook has no edit/delete action, double-approval/reject-after-complete/
+  request-against-already-deleted are all blocked). All 134 project tests pass (up from 107),
+  Pint clean (178 files).
+- **Manual QA**: performed for real over HTTP (curl, real cookie-jar sessions, the seeded dev
+  `admin@ieee-iubat.test`/`manager@ieee-iubat.test` accounts, against the live local Sail server)
+  rather than only through automated tests — logged in as the certificate manager, generated a QR
+  record, confirmed the "Request Deletion" panel, submitted a request, confirmed the "Pending"
+  state; logged in as Super Admin, confirmed the review queue showed the right recipient/reason,
+  approved it, confirmed the record left the Records list, confirmed its old QR now shows
+  "Certificate Not Verified" publicly, confirmed the Logbook shows all three lifecycle events with
+  no Delete/Edit action anywhere, confirmed the "Deleted Records" view is Super-Admin-only (403 for
+  the manager); generated a second record, requested and then rejected its deletion, confirmed it
+  stayed active and still verifies, and confirmed its detail page shows "Rejected" + "Request
+  Deletion Again."
+- **Docs**: `docs/CERTIFICATE_SYSTEM.md` — new §Controlled deletion section (soft delete, the two
+  new tables, the service, the snapshot shape, audit-log immutability, authorization including the
+  documented self-approval limitation, direct-delete prevention, deleted-records views, data
+  retention); §Revocation and §Reissue cross-reference the new `audit_logs` table's actual current
+  scope instead of describing it as purely aspirational.

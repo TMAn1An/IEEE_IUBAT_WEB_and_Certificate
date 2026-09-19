@@ -15,10 +15,24 @@
 <x-layouts.admin title="Certificate {{ $certificate->certificate_number }}">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
     <a href="{{ route('admin.certificates.index') }}" class="btn btn--ghost btn--sm">&larr; All certificates</a>
-    @if ($certificate->pdf_path)
+    @if ($certificate->pdf_path && ! $certificate->trashed())
       <a href="{{ route('admin.certificates.download', $certificate) }}" download="{{ $certificate->certificate_number }}.pdf" class="btn btn--primary">Download PDF</a>
     @endif
   </div>
+
+  @if ($certificate->trashed())
+    <div class="admin-card" style="border-left:4px solid var(--danger)">
+      <h2 style="margin-top:0">Record Deleted</h2>
+      <p style="color:var(--muted)">
+        This certificate was soft-deleted following an approved deletion request. It no longer
+        verifies publicly and no longer appears in normal certificate lists — the row is retained
+        here only for recovery/audit purposes.
+      </p>
+      @if ($deletionRequest?->completed_at)
+        <p><strong>Completed at:</strong> {{ $deletionRequest->completed_at->format('j M Y, g:i A') }}</p>
+      @endif
+    </div>
+  @endif
 
   <div class="admin-card">
     <h2 style="margin-top:0"><code>{{ $certificate->certificate_number }}</code></h2>
@@ -49,35 +63,46 @@
     </table>
   </div>
 
-  <div class="admin-card">
-    <h3 style="margin-top:0;font-size:1rem">Public verification</h3>
-    <div class="field">
-      <label>Verification link</label>
-      <input type="text" id="verify-url" value="{{ $verificationUrl }}" readonly onclick="this.select()">
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy Verification Link</button>
-      <a href="{{ $verificationUrl }}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">View Public Verification</a>
-    </div>
-    <p id="copy-status" style="color:var(--muted);font-size:.85rem;margin-top:8px"></p>
-  </div>
-
-  @if ($certificate->pdf_path)
+  @unless ($certificate->trashed())
     <div class="admin-card">
-      <h3 style="margin-top:0;font-size:1rem">Certificate PDF</h3>
-      <iframe src="{{ route('admin.certificates.download', $certificate) }}" style="width:100%;height:600px;border:1px solid var(--border)"></iframe>
+      <h3 style="margin-top:0;font-size:1rem">Public verification</h3>
+      <div class="field">
+        <label>Verification link</label>
+        <input type="text" id="verify-url" value="{{ $verificationUrl }}" readonly onclick="this.select()">
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+        <button type="button" class="btn btn--ghost btn--sm" id="copy-link-btn">Copy Verification Link</button>
+        <a href="{{ $verificationUrl }}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm">View Public Verification</a>
+      </div>
+      <p id="copy-status" style="color:var(--muted);font-size:.85rem;margin-top:8px"></p>
     </div>
-  @endif
+
+    @if ($certificate->pdf_path)
+      <div class="admin-card">
+        <h3 style="margin-top:0;font-size:1rem">Certificate PDF</h3>
+        <iframe src="{{ route('admin.certificates.download', $certificate) }}" style="width:100%;height:600px;border:1px solid var(--border)"></iframe>
+      </div>
+    @endif
+
+    <x-admin.deletion-request-panel
+      :record="$certificate"
+      :deletion-request="$deletionRequest"
+      :action="route('admin.certificates.request-deletion', $certificate)"
+    />
+  @endunless
 
   <script>
-    document.getElementById('copy-link-btn').addEventListener('click', function () {
-      var url = document.getElementById('verify-url').value;
-      var status = document.getElementById('copy-status');
-      navigator.clipboard.writeText(url).then(function () {
-        status.textContent = 'Link copied.';
-      }).catch(function () {
-        status.textContent = 'Could not copy automatically -- select and copy the link field manually.';
+    var copyLinkBtn = document.getElementById('copy-link-btn');
+    if (copyLinkBtn) {
+      copyLinkBtn.addEventListener('click', function () {
+        var url = document.getElementById('verify-url').value;
+        var status = document.getElementById('copy-status');
+        navigator.clipboard.writeText(url).then(function () {
+          status.textContent = 'Link copied.';
+        }).catch(function () {
+          status.textContent = 'Could not copy automatically -- select and copy the link field manually.';
+        });
       });
-    });
+    }
   </script>
 </x-layouts.admin>
