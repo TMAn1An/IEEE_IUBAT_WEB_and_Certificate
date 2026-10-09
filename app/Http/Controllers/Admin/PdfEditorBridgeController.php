@@ -2,10 +2,10 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enums\CertificateTemplateStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\FinalizePdfEditorBatchRequest;
 use App\Http\Requests\Admin\ReservePdfEditorBatchRequest;
-use App\Enums\CertificateTemplateStatus;
 use App\Models\Certificate;
 use App\Models\CertificateBatch;
 use App\Models\CertificateTemplate;
