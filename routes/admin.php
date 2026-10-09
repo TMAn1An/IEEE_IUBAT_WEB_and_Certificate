@@ -6,6 +6,8 @@ use App\Http\Controllers\Admin\CertificateController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DeletionRequestController;
 use App\Http\Controllers\Admin\PdfEditorBridgeController;
+use App\Http\Controllers\Admin\PdfStudioApiController;
+use App\Http\Controllers\Admin\PdfStudioController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
@@ -201,4 +203,35 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::get('/batches/{batch}/reservation.xlsx', [PdfEditorBridgeController::class, 'downloadReservationExcel'])->name('batches.reservation-excel');
     Route::get('/batches/{batch}/qr-codes.zip', [PdfEditorBridgeController::class, 'downloadQrZip'])->name('batches.qr-zip');
     Route::post('/batches/{batch}/finalize', [PdfEditorBridgeController::class, 'finalize'])->name('batches.finalize');
+
+    // PDF Studio — the direct, single-interface integration that supersedes
+    // the manual bridge above for day-to-day use (the bridge stays as a
+    // documented manual fallback — see docs/PDF_STUDIO_INTEGRATION.md).
+    // Serves the embedded, pinned pdfeditor build; the JSON API below is
+    // what its adapter code (studio.html -> src/integration/ in that repo)
+    // calls, all same-origin, auth+CSRF protected like everything else here.
+    Route::get('/certificates/studio/{template}', [PdfStudioController::class, 'show'])->name('pdf-studio.show');
+    Route::get('/certificates/studio/{template}/prepare', [PdfStudioController::class, 'prepare'])->name('pdf-studio.prepare');
+    Route::get('/certificates/studio/{template}/batches/{batch}', [PdfStudioController::class, 'show'])->name('pdf-studio.show-batch');
+
+    Route::prefix('api/pdf-studio')->name('pdf-studio.api.')->group(function () {
+        Route::get('/templates/{template}/project', [PdfStudioApiController::class, 'getProject'])->name('templates.project.show');
+        Route::put('/templates/{template}/project', [PdfStudioApiController::class, 'saveProject'])->name('templates.project.store');
+        Route::get('/templates/{template}/schema', [PdfStudioApiController::class, 'schema'])->name('templates.schema');
+        Route::get('/templates/{template}/sample.xlsx', [PdfStudioApiController::class, 'sampleXlsx'])->name('templates.sample');
+        Route::post('/templates/{template}/batches', [PdfStudioApiController::class, 'prepareBatch'])->name('templates.batches.prepare');
+        Route::post('/templates/{template}/batches/confirm', [PdfStudioApiController::class, 'confirmBatch'])->name('templates.batches.confirm');
+
+        Route::get('/batches/{batch}/manifest', [PdfStudioApiController::class, 'manifest'])->name('batches.manifest');
+        Route::get('/batches/{batch}/status', [PdfStudioApiController::class, 'status'])->name('batches.status');
+        Route::get('/batches/{batch}/download.zip', [PdfStudioApiController::class, 'downloadZip'])->name('batches.download');
+
+        Route::post('/reservations/{reservation}/finalize', [PdfStudioApiController::class, 'finalizeReservation'])->name('reservations.finalize');
+    });
+    // Live, deterministic, never persisted separately from the codeword —
+    // see QrCodeService::pngBytes()'s own docblock for why there's nothing
+    // to cache here. Named outside the api. group so PdfStudioApiController
+    // can reference them via route() without the prefix.
+    Route::get('/api/pdf-studio/reservations/{reservation}/qr.png', [PdfStudioApiController::class, 'qrImage'])->name('pdf-studio.reservations.qr');
+    Route::get('/api/pdf-studio/reservations/{reservation}/photo', [PdfStudioApiController::class, 'photo'])->name('pdf-studio.reservations.photo');
 });

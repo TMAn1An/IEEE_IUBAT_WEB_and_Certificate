@@ -26,6 +26,9 @@ class CertificateTemplate extends Model
         'qr_code_layout',
         'status',
         'created_by',
+        'editor_project_path',
+        'editor_schema',
+        'editor_schema_version',
     ];
 
     protected function casts(): array
@@ -37,6 +40,8 @@ class CertificateTemplate extends Model
             'file_size' => 'integer',
             'certificate_number_layout' => 'array',
             'qr_code_layout' => 'array',
+            'editor_schema' => 'array',
+            'editor_schema_version' => 'integer',
         ];
     }
 
@@ -44,6 +49,12 @@ class CertificateTemplate extends Model
     public function hasBackground(): bool
     {
         return $this->source_pdf_path !== null;
+    }
+
+    /** Whether an admin has saved a PDF Studio project (bundle) for this template. */
+    public function hasEditorProject(): bool
+    {
+        return $this->editor_project_path !== null;
     }
 
     /** @return HasMany<TemplateField, $this> */

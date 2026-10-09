@@ -24,6 +24,7 @@
             <td>{{ $template->fields_count }}</td>
             <td>{{ $template->updated_at->format('j M Y') }}</td>
             <td style="text-align:right">
+              <a href="{{ route('admin.pdf-studio.show', $template) }}" class="btn btn--primary btn--sm">PDF Studio</a>
               <a href="{{ route('admin.templates.edit', $template) }}" class="btn btn--ghost btn--sm">Manage</a>
             </td>
           </tr>

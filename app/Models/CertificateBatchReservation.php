@@ -19,6 +19,7 @@ class CertificateBatchReservation extends Model
         'recipient_name',
         'data',
         'qr_filename',
+        'photo_path',
         'status',
         'certificate_id',
         'error_message',

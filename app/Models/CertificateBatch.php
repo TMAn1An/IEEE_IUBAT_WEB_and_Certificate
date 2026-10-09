@@ -21,6 +21,8 @@ class CertificateBatch extends Model
         'successful_rows',
         'failed_rows',
         'created_by',
+        'idempotency_key',
+        'editor_schema_version',
     ];
 
     protected function casts(): array
@@ -30,6 +32,7 @@ class CertificateBatch extends Model
             'total_rows' => 'integer',
             'successful_rows' => 'integer',
             'failed_rows' => 'integer',
+            'editor_schema_version' => 'integer',
         ];
     }
 
