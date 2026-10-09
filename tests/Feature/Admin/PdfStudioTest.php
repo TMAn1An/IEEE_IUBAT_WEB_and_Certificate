@@ -114,6 +114,12 @@ class PdfStudioTest extends TestCase
         $this->assertEqualsCanonicalizing(['name', 'paper_title', 'photo'], $columns);
         $this->assertSame('fld_qr', $template->editor_schema['qr_field_id']);
         $this->assertSame('fld_name', $template->editor_schema['recipient_field_id']);
+
+        // The saved bundle must be fetchable back byte-for-byte (this is
+        // what "Load from server" in the Studio actually calls).
+        $get = $this->actingAs($admin)->get(route('admin.pdf-studio.api.templates.project.show', $template));
+        $get->assertOk();
+        $this->assertNotEmpty($get->streamedContent());
     }
 
     public function test_unauthenticated_user_cannot_reach_the_studio(): void
@@ -208,6 +214,48 @@ class PdfStudioTest extends TestCase
         $verify = $this->get(route('certificate.verify', ['codeword' => $reservation->codeword]));
         $verify->assertOk();
         $verify->assertDontSee('Alice Doe');
+    }
+
+    public function test_manifest_exposes_field_id_to_column_mapping_for_the_studio_adapter(): void
+    {
+        // Regression test: reservations[].data is keyed by editor field id
+        // (consistent with how the rest of the certificate system keys
+        // `data`), but the saved project's own field mapping resolves
+        // values by COLUMN NAME. The Studio adapter (GeneratePanel.tsx)
+        // needs this id->column table to re-key data before handing rows to
+        // the unmodified render engine — found missing during browser
+        // verification (the generated PDFs rendered as blank templates
+        // with no error reported), fixed by adding `fields` here. See
+        // docs/PDF_STUDIO_INTEGRATION.md.
+        $admin = User::factory()->create();
+        $template = $this->draftTemplate($admin);
+        $this->actingAs($admin)->call('PUT', route('admin.pdf-studio.api.templates.project.store', $template), [
+            'qr_field_id' => 'fld_qr', 'recipient_field_id' => 'fld_name',
+        ], [], ['project' => $this->projectBundle()]);
+        $prepare = $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.prepare', $template), [
+            'participants' => $this->excelUpload(['name', 'paper_title'], [['Alice Doe', 'A Study']]),
+        ]);
+        $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.confirm', $template), [
+            'token' => $prepare->json('token'), 'idempotency_key' => 'k-manifest',
+        ]);
+        $batch = CertificateBatch::first();
+
+        $manifest = $this->actingAs($admin)->getJson(route('admin.pdf-studio.api.batches.manifest', $batch));
+        $manifest->assertOk();
+
+        $fields = collect($manifest->json('fields'));
+        $this->assertEqualsCanonicalizing(
+            ['name', 'paper_title', 'photo'],
+            $fields->pluck('column')->all()
+        );
+        $nameField = $fields->firstWhere('column', 'name');
+        $this->assertSame('fld_name', $nameField['id']);
+
+        // The data for the row is keyed by field id, exactly what `fields`
+        // must be used to translate.
+        $reservationData = collect($manifest->json('reservations'))->first()['data'];
+        $this->assertArrayHasKey('fld_name', $reservationData);
+        $this->assertSame('Alice Doe', $reservationData['fld_name']);
     }
 
     public function test_finalize_creates_certificate_and_is_idempotent_and_rejects_conflicting_pdf(): void

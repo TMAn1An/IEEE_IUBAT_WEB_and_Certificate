@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * JSON API consumed by the embedded PDF Studio (the pdfeditor adapter under
@@ -40,7 +41,7 @@ class PdfStudioApiController extends Controller
         private readonly QrCodeService $qrCodeService,
     ) {}
 
-    public function getProject(CertificateTemplate $template): Response
+    public function getProject(CertificateTemplate $template): StreamedResponse
     {
         $this->authorize('create', Certificate::class);
 
@@ -133,7 +134,8 @@ class PdfStudioApiController extends Controller
 
         $batch->load('reservations');
 
-        $columns = collect($batch->template->editor_schema['fields'] ?? [])->pluck('column')->all();
+        $schemaFields = collect($batch->template->editor_schema['fields'] ?? []);
+        $columns = $schemaFields->pluck('column')->all();
 
         return response()->json([
             'batch' => [
@@ -144,6 +146,14 @@ class PdfStudioApiController extends Controller
                 'failed_rows' => $batch->failed_rows,
             ],
             'columns' => $columns,
+            // `reservations[].data` is keyed by editor FIELD ID (the stable
+            // identifier, consistent with how the rest of the certificate
+            // system keys `data`) — but the saved project's own field
+            // mapping (`FieldSource.column`) looks values up by COLUMN
+            // NAME. This id->column table is what the Studio adapter uses
+            // to re-key `data` into a SheetRow the unmodified render engine
+            // can actually resolve. See docs/PDF_STUDIO_INTEGRATION.md.
+            'fields' => $schemaFields->map(fn ($f) => ['id' => $f['id'], 'column' => $f['column']])->values(),
             'reservations' => $batch->reservations->map(fn (CertificateBatchReservation $r) => [
                 'id' => $r->id,
                 'row_index' => $r->row_index,
@@ -169,7 +179,7 @@ class PdfStudioApiController extends Controller
         return response($png, 200, ['Content-Type' => 'image/png']);
     }
 
-    public function photo(CertificateBatchReservation $reservation): Response
+    public function photo(CertificateBatchReservation $reservation): StreamedResponse
     {
         $this->authorize('create', Certificate::class);
 
