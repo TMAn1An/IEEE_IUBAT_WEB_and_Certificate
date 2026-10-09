@@ -11,6 +11,7 @@
         "laravel/tinker": "^2.10.1",
         "phpoffice/phpspreadsheet": "^5.10",
         "setasign/fpdi": "^2.6",
+        "symfony/html-sanitizer": "^7.3",
         "tecnickcom/tcpdf": "^6.8"
     },
     "require-dev": {
