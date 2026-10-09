@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\Certificates\CertificateIssuanceService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use setasign\Fpdi\Tcpdf\Fpdi;
 use Tests\TestCase;
 
@@ -26,6 +27,9 @@ class CertificateIssuanceTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** @var list<string> background fixtures written by the current test */
+    private array $fixturePaths = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -35,6 +39,17 @@ class CertificateIssuanceTest extends TestCase
         // `Storage::disk('local')->allFiles(...)` assertions would see
         // leftover files from earlier test runs/classes.
         Storage::fake('local');
+    }
+
+    protected function tearDown(): void
+    {
+        // Clean up only the fixtures THIS test created (see activeTemplate()).
+        foreach ($this->fixturePaths as $path) {
+            Storage::disk('local')->delete($path);
+        }
+        $this->fixturePaths = [];
+
+        parent::tearDown();
     }
 
     private function realPdfBytes(): string
@@ -54,8 +69,19 @@ class CertificateIssuanceTest extends TestCase
     {
         $template = CertificateTemplate::factory()->for($creator, 'creator')->create();
 
-        $path = 'certificate-templates/'.$template->id.'/fixture.pdf';
-        Storage::disk('local')->put($path, $this->realPdfBytes());
+        // A unique path per test, never a shared one. RefreshDatabase rolls
+        // back every test, so $template->id is 1 in EVERY test and a fixed
+        // `certificate-templates/1/fixture.pdf` was shared by all of them.
+        // PdfPageBoxReader's FPDI reader objects reference each other, so
+        // the file handle they open stays open until PHP's cycle collector
+        // runs. On Windows an open file can't be truly deleted (it stays
+        // "delete pending") and nothing can be created at its path, so after
+        // any test that rendered a PDF, the next test's Storage::fake()
+        // cleanup + put() of the same path silently failed and the template
+        // pointed at a missing file. (Linux/macOS unlink open files fine.)
+        $path = 'certificate-templates/'.$template->id.'/fixture-'.Str::random(16).'.pdf';
+        $this->assertTrue(Storage::disk('local')->put($path, $this->realPdfBytes()), "Could not write the PDF fixture at {$path}.");
+        $this->fixturePaths[] = $path;
 
         $template->update([
             'source_pdf_path' => $path,

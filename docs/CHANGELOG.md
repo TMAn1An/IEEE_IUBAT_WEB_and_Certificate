@@ -992,3 +992,23 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   this change: on Windows the PDF fixture written to the faked `local` disk goes missing between tests
   ("PDF file not found …/fixture.pdf"), and all three pass when run alone. Manual QA was done in a
   real browser (checklist in `docs/TESTING.md` §Form Builder).
+
+## Test isolation fix — CertificateIssuanceTest on Windows (2026-10-09)
+
+- **Symptom**: 3 `CertificateIssuanceTest` errors ("PDF file not found …/certificate-templates/1/fixture.pdf")
+  whenever the whole class or the full suite ran on Windows. Each test passed when run on its own.
+- **Root cause**: every test wrote its background fixture to the same fixed path
+  (`certificate-templates/{template id}/fixture.pdf`), and because `RefreshDatabase` rolls back each
+  test, the template id was always 1. `PdfPageBoxReader::read()` builds FPDI reader objects that
+  reference each other in a cycle, so the file handle they open is only closed when PHP's cycle collector
+  runs, not when `read()` returns. On Windows a file with an open handle can't really be deleted (it
+  stays "delete pending") and nothing can be created at its path. After any test that rendered a PDF,
+  the next test's `Storage::fake()` cleanup and `put()` of that same path failed silently (`put()` returned
+  false), so the template pointed at a missing file. Linux/macOS can unlink open files, so this never
+  showed under Sail.
+- **Fix (test-only)**: each test now writes its fixture to a unique path, asserts the write succeeded
+  (so a silent failure can't hide again), and deletes only its own fixtures in `tearDown()`. No
+  production code changed. The suite passes in declaration, reversed and random order.
+- **Note for later**: in production each PHP request ends and closes the handle, so this is harmless
+  today. A long-running bulk-generation worker would keep one handle per template until garbage
+  collection runs. Worth releasing explicitly when bulk generation is built.
