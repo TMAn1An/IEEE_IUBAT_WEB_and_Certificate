@@ -3,9 +3,9 @@
 use App\Http\Controllers\Admin\AuditLogController;
 use App\Http\Controllers\Admin\AuthController;
 use App\Http\Controllers\Admin\CertificateController;
-use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DeletionRequestController;
+use App\Http\Controllers\Admin\PdfEditorBridgeController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
@@ -189,9 +189,16 @@ Route::middleware(['auth', 'active'])->group(function () {
     // this resource, on purpose. See App\Policies\AuditLogPolicy.
     Route::get('/logbook', [AuditLogController::class, 'index'])->name('logbook.index');
 
-    // Functionality lands in later phases (see docs/MIGRATION_PLAN.md's
-    // phase list). Real nav entries now, honest "not built yet" pages
-    // rather than dead links or fake functionality.
-    Route::get('/bulk-generation', [ComingSoonController::class, 'bulkGeneration'])->name('bulk-generation.index');
-    Route::get('/batches', [ComingSoonController::class, 'batches'])->name('batches.index');
+    // PDF Editor Bridge (see docs/CERTIFICATE_SYSTEM.md §PDF Editor Bridge):
+    // the integration layer to the separate, client-side PDF Template
+    // Studio editor. "Bulk Generation" / "Batches" were ComingSoonController
+    // placeholders (Phase 7) until this bridge made them real — same nav
+    // entries, same route names, now backed by PdfEditorBridgeController.
+    Route::get('/bulk-generation', [PdfEditorBridgeController::class, 'create'])->name('bulk-generation.index');
+    Route::post('/bulk-generation', [PdfEditorBridgeController::class, 'store'])->name('bulk-generation.store');
+    Route::get('/batches', [PdfEditorBridgeController::class, 'index'])->name('batches.index');
+    Route::get('/batches/{batch}', [PdfEditorBridgeController::class, 'show'])->name('batches.show');
+    Route::get('/batches/{batch}/reservation.xlsx', [PdfEditorBridgeController::class, 'downloadReservationExcel'])->name('batches.reservation-excel');
+    Route::get('/batches/{batch}/qr-codes.zip', [PdfEditorBridgeController::class, 'downloadQrZip'])->name('batches.qr-zip');
+    Route::post('/batches/{batch}/finalize', [PdfEditorBridgeController::class, 'finalize'])->name('batches.finalize');
 });

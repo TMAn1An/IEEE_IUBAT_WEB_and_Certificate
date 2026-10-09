@@ -1055,3 +1055,54 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   them.
 - No code change: the installed package is the same commit the tests already ran against.
 - Follow-up: once the package tags releases (e.g. `v0.1.0`), switch the constraint to `^0.1`.
+
+## PDF Editor Bridge (2026-10-09)
+
+- **Why**: integrate the separately-maintained, 100%-client-side PDF editor
+  (`https://github.com/TMAn1An/pdfeditor`, "PDF Template Studio") with this app's advanced
+  certificate workflow (`certificate_templates`/`certificate_batches`/`certificates`), without
+  rewriting, replacing, or embedding that editor's rendering/export engine — see
+  `docs/CERTIFICATE_SYSTEM.md` §PDF Editor Bridge for the full design and why the editor's own
+  production Content-Security-Policy (`connect-src 'self'`) and local-first design rule out a
+  live network integration. The chosen boundary is a two-step file handoff: Laravel mints
+  certificate numbers/codewords/QR images up front and hands them to the admin as a spreadsheet +
+  QR-image ZIP; the admin designs and exports the real PDFs in the unmodified editor (which
+  already matches image fields to files by spreadsheet-column filename, and already supports a
+  user-chosen bulk-export filename pattern) entirely unchanged; Laravel then ingests the finished
+  PDFs by matching filename (minus extension) to the codeword it minted.
+- **Added**: `certificate_batch_reservations` table + `App\Models\CertificateBatchReservation` +
+  `App\Enums\CertificateBatchReservationStatus` (reserved/finalized/failed) — holds a
+  certificate_number/codeword/QR-filename/data per spreadsheet row BEFORE any PDF or
+  `certificates` row exists, so `CertificateIssuanceService`'s "never a certificates row without a
+  matching stored PDF" invariant is preserved for this path too. `certificate_batches` gained a
+  nullable `source` column (`'pdf_editor_bridge'` for batches from this flow).
+- **Added**: `App\Services\Certificates\PdfEditorBridge\PdfEditorBridgeReservationService`
+  (validates the recipients spreadsheet's headers against the chosen template's field keys,
+  mints certificate_number/codeword/QR PNG per valid row via the existing
+  `CertificateNumberService`/`VerificationCodewordService`/`QrCodeService`, writes an augmented
+  `.xlsx` + QR-codes `.zip` to private storage) and
+  `PdfEditorBridgeFinalizeService` (matches uploaded PDFs — from a ZIP or a single file — to a
+  `reserved` row by codeword==filename, validates real PDF content, stores the PDF, and only then
+  creates the real `certificates` row). One bad/unmatched file never aborts the rest of a batch.
+- **Added**: `App\Http\Controllers\Admin\PdfEditorBridgeController`,
+  `Admin\ReservePdfEditorBatchRequest`/`Admin\FinalizePdfEditorBatchRequest`, and views under
+  `resources/views/admin/pdf-editor/*`. Reuses `App\Policies\CertificatePolicy::create`/`viewAny`
+  for authorization (both admin roles) rather than adding a new policy.
+- **Removed**: `App\Http\Controllers\Admin\ComingSoonController` and
+  `resources/views/admin/coming-soon.blade.php` — both of its only two routes
+  (`admin.bulk-generation.index`, `admin.batches.index`) are now real pages backed by
+  `PdfEditorBridgeController`, under the same route names/URLs, so the existing nav links needed
+  no changes.
+- **Known limitation**: a certificate created through this path has `template_snapshot`/
+  `layout_snapshot` = `null` (unlike the advanced single-certificate path) — no PDF is ever
+  rendered by `CertificatePdfService` here, so there is no position/style layout for Laravel to
+  snapshot; the editor's own `.pdftemplate` project file is the durable record of how that PDF was
+  laid out, and is not currently archived by Laravel. See `docs/CERTIFICATE_SYSTEM.md` §PDF Editor
+  Bridge for the full list of remaining limitations (no live progress UI during finalize, 1000-row
+  cap per reservation batch, no automatic retry of a failed row).
+- **Tests**: `tests/Feature/Admin/PdfEditorBridgeTest.php` — unique codeword/certificate-number
+  minting, unknown/missing-column rejection, finalize matching + certificate creation, unmatched/
+  invalid-PDF isolation, and public verification of a bridge-created certificate.
+- **Not changed**: `https://github.com/TMAn1An/pdfeditor` itself (read-only reference for this
+  work; no commits made there), the simple QR tool, the advanced single-certificate PDF path, and
+  every existing public/admin URL.

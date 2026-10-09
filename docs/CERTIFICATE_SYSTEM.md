@@ -1338,3 +1338,109 @@ MySQL is the only source of truth at all times. Excel files are:
   caught immediately by the rewritten import tests before anything shipped; fixed by dropping the
   now-nonsensical per-object `view` check in favor of the same `QrCertificate::create` ability
   every other import/generate action already gates on.
+
+## PDF Editor Bridge — integrating the separate PDF Template Studio editor
+
+A second, external repository (`https://github.com/TMAn1An/pdfeditor`, "PDF Template Studio") is a
+local-first, 100%-client-side React/TypeScript SPA: PDF rendering/editing runs entirely in the
+browser via PDFium WASM + pdf-lib, there is **no server component at all**, and its production
+build ships a Content-Security-Policy (`scripts/vite-plugin-pdfjs-assets.ts`) whose `connect-src`
+is `'self' blob: data:` only — it cannot make a network request to this Laravel app, or to
+anywhere else, by design (`README.md`: "there is no server... PDFs, spreadsheets, photos and fonts
+are read with the browser's File API and never uploaded"). This is a deliberate privacy property
+of that tool, not an oversight, and CLAUDE.md's instruction to integrate the editor without
+rewriting its engine extends to not weakening that property either.
+
+### Why a live/embedded integration was rejected
+
+Three integration shapes were considered and rejected before landing on the file-handoff design
+below:
+
+1. **Embed the SPA in an iframe/admin page and call Laravel via `fetch()`.** Would require either
+   relaxing the shipped CSP (a change to the editor's own security posture, which the brief
+   explicitly said to avoid unless strictly required) or serving the editor same-origin from this
+   Laravel app's `public/` — and even same-origin, nothing in the editor's code calls out to any
+   backend today (confirmed: the only `fetch()` calls in `src/` load the app's own bundled
+   `samples/`and `pdfium.wasm` assets). Adding that call site would be new code in the editor's
+   own repository, which this task's blocker-reporting instruction asks to flag rather than do
+   silently; it's also unnecessary given option 3 works with zero editor changes.
+2. **Run the editor's rendering pipeline headlessly under Node on the server.** Its core
+   `generateFilledPdf`/`planRow` functions (`src/lib/render/*`) are proven to run under plain Node
+   by the project's own Vitest suite (`environment: 'node'`), so this is technically possible. It
+   is still rejected for the *production* path: this app's hosting target is cPanel shared hosting
+   with **no Node/Docker/Python at runtime** (CLAUDE.md, `docs/ARCHITECTURE.md` §7) — invoking a
+   Node script from a PHP request or cron job isn't available there. (It remains a reasonable
+   option for the admin's own machine someday, but nothing here depends on it.)
+3. **A file-based handoff**: Laravel prepares data the admin feeds into the unmodified browser
+   tool, then ingests what the tool exports. Zero code changes to the editor, zero weakening of its
+   CSP/privacy design, zero Node dependency in production. This is what's implemented.
+
+### How the handoff actually closes the loop
+
+The one remaining problem with a pure file handoff is the QR code: it must encode
+`/certificate/verify/{codeword}`, and `codeword` is normally minted *during* PDF rendering — but
+here Laravel never renders the PDF. The bridge resolves this by minting first and rendering second:
+
+1. **Reserve** (`PdfEditorBridgeReservationService`): admin picks an active `CertificateTemplate`
+   (used here purely for its field **schema** — `label`/`field_key`/`is_required`/
+   `is_recipient_name` — never for position/layout, since Laravel does not render this PDF) and
+   uploads a recipients `.xlsx` whose header row must exactly match the template's field keys.
+   Unknown columns or missing required columns are rejected before anything is minted. For every
+   valid row, inside its own DB transaction: `CertificateNumberService::next()` mints a
+   `certificate_number`, a CSPRNG codeword is minted and checked unique against both
+   `certificates.codeword` and the new `certificate_batch_reservations.codeword` (two tables,
+   because a reservation is not yet a certificate — see below), and
+   `QrCodeService::pngBytes(verificationUrlForCodeword($codeword))` renders that row's QR as a
+   standalone PNG — the exact same QR-generation code path the advanced single-certificate flow
+   uses, so the bridge's QR codes are pixel-identical in intent to the existing system's. A
+   `CertificateBatchReservation` row records the mapping; nothing is written to `certificates` yet.
+   The service then writes two files to `storage/app/private/certificate-batches/{batch}/`: an
+   augmented `.xlsx` (original columns + `certificate_number`/`codeword`/`qr_image`, every cell run
+   through the existing `ExcelFormulaGuard`) and `qr-codes.zip` (one `{codeword}.png` per row).
+2. **Design & export, unchanged, in the separate editor**: the admin opens PDF Template Studio
+   (completely separately — it is not served by this app), loads the augmented spreadsheet,
+   selects the QR PNGs as the image-file set for the session, and maps the `qr_image` column to a
+   QR-code image field using the editor's **existing, unmodified** filename-matching (`src/lib/
+   images/match.ts`'s `ImageIndex.match()` — case-insensitive, extension-optional). The admin sets
+   the editor's own, already-existing bulk-export filename pattern to `{codeword}` so each
+   generated PDF's filename is exactly `{codeword}.pdf`. Clicking the editor's existing "Export
+   ZIP" produces a ZIP of filled PDFs — no new editor feature was needed for any of this.
+3. **Finalize** (`PdfEditorBridgeFinalizeService`): admin uploads that ZIP (or a single PDF) back
+   to Laravel. Each entry's filename (minus `.pdf`) is looked up against this batch's `reserved`
+   rows; a match is re-validated for real PDF content (`%PDF-` magic header, size cap), stored to
+   `storage/app/private/certificates/{year}/{uuid}.pdf` (the same path convention
+   `CertificateIssuanceService` already uses), and only then does a real `certificates` row get
+   created — `status = Active`, `certificate_number`/`codeword`/`recipient_name`/`data` copied from
+   the reservation, `pdf_path` set to the just-stored file. An unmatched filename or a corrupt PDF
+   is recorded as an error and skipped; it never aborts or corrupts the rest of the upload (each
+   match runs in its own DB transaction with `lockForUpdate()` on the reservation row, so a
+   double-submit can't double-finalize the same row).
+4. **Verification is unchanged.** A bridge-created `certificates` row looks exactly like one from
+   the advanced single-certificate path to `CertificateVerificationService`/`/certificate/verify/
+   {codeword}` — same table, same columns, same public-field resolution. Scanning its QR works
+   immediately, with no code change to the verification path at all.
+
+### Known limitations of this integration (reported, not silently worked around)
+
+- **No `template_snapshot`/`layout_snapshot`.** The advanced path's snapshot exists to freeze
+  *where things were drawn* so a later template edit can't retroactively change an issued
+  certificate's PDF. In the bridge, Laravel never draws anything — the editor's own `.pdftemplate`
+  project file is the actual record of the layout, and that file is not currently archived
+  anywhere by Laravel. If an admin's local project file is lost, the exact layout used for a past
+  batch cannot be reconstructed from the database alone (the PDF itself, already stored, still
+  can be inspected/regenerated by hand). A future iteration could ask the admin to also upload the
+  `.pdftemplate` file at reserve or finalize time purely for archival (never for rendering), but
+  that wasn't built in this pass since it isn't required for verification or revocation to work.
+- **No live progress UI during finalize.** A ZIP of many PDFs is processed synchronously within one
+  request, each file in its own transaction (bounded, not one giant transaction) — fine at the
+  `MAX_ROWS = 1000` / 50MB upload cap enforced here, but a genuinely large batch would want the
+  existing `certificate_batches.status` (`processing` → `completed`/`partial`) driven by a queued
+  job instead. Not built: no queue worker currently drives any part of this bridge; it was kept
+  synchronous to match the brief's "smallest safe" instruction and because the per-row work
+  (a file match + a storage write + one INSERT) is cheap, unlike full PDF rendering.
+- **A failed/unmatched row has no automatic retry UI.** The admin re-uploads a corrected single PDF
+  (named `{codeword}.pdf`) to the same batch's finalize endpoint, which matches and finalizes just
+  that one row — this works today, but there's no dedicated "retry this row" button pointing at it.
+- **The editor repository itself was not modified** (per the brief's core constraint) — every
+  feature this bridge depends on (image-by-filename matching, a user-chosen export filename
+  pattern) already existed in `https://github.com/TMAn1An/pdfeditor` before this work started.
