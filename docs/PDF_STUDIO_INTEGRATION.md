@@ -5,6 +5,12 @@ That code is reused, not deleted — the reservation/finalize split and its inva
 `certificates` row without a stored PDF; codeword minted ahead of rendering) carry over unchanged.
 This doc records the direct-integration contract so Phase 2+ have a fixed target.
 
+**Status: implemented and verified live** (full browser run through template design, QR field
+placement, participant upload, generation, QR decode + public verification, resume, and
+re-download — see `docs/CHANGELOG.md`'s "PDF Studio" entry for the trace and the bugs that trace
+found and fixed). Final pdfeditor commit: `067dfa7c537ae8c069a057badd9197e18c3957bd` on branch
+`claude/laravel-studio-integration`.
+
 ## Repos and checkpoint (verified, see audit in conversation history)
 
 - IEEE repo `claude/happy-pascal-y6ek93` @ `59e3317` (clean) — continuing on this branch.

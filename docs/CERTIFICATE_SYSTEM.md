@@ -1444,3 +1444,12 @@ here Laravel never renders the PDF. The bridge resolves this by minting first an
 - **The editor repository itself was not modified** (per the brief's core constraint) — every
   feature this bridge depends on (image-by-filename matching, a user-chosen export filename
   pattern) already existed in `https://github.com/TMAn1An/pdfeditor` before this work started.
+
+## PDF Studio — superseding direct integration
+
+The manual file-handoff bridge above has been superseded by **PDF Studio**, a direct,
+single-interface integration that embeds the pdfeditor build in the admin and drives it
+programmatically — no manual spreadsheet/QR-zip/PDF download-reupload steps. The bridge's code,
+tables and tests are unchanged and remain available as a manual fallback. See
+`docs/PDF_STUDIO_INTEGRATION.md` for the full design and `docs/CHANGELOG.md`'s "PDF Studio" entry
+for what shipped, what was found and fixed via live browser verification, and current limitations.

@@ -1106,3 +1106,58 @@ project-behavior changelog, not a raw git log — explain what changed and why i
 - **Not changed**: `https://github.com/TMAn1An/pdfeditor` itself (read-only reference for this
   work; no commits made there), the simple QR tool, the advanced single-certificate PDF path, and
   every existing public/admin URL.
+
+## PDF Studio: single-interface direct integration (2026-10-09/10)
+
+Supersedes the manual-handoff PDF Editor Bridge above as the primary bulk-generation workflow (the
+bridge's code, routes and tests are unchanged and remain a documented manual fallback). Full design
+in `docs/PDF_STUDIO_INTEGRATION.md`. Summary:
+
+- The compiled pdfeditor build (`https://github.com/TMAn1An/pdfeditor`, branch
+  `claude/laravel-studio-integration`, now at commit `067dfa7`) is embedded directly in the admin
+  under `/admin/certificates/studio/{template}`, served by `PdfStudioController` (auth +
+  `CertificatePolicy` checked before the shell is returned; static assets under
+  `public/vendor/pdf-editor/{sha}/` are otherwise unauthenticated, same as any other static asset —
+  all real data flows through the authenticated JSON API). Pinned via
+  `scripts/sync-pdf-editor-assets.php`, never an untracked copy.
+- `certificate_templates` gained `editor_project_path`/`editor_schema`/`editor_schema_version`
+  (additive, nullable) to store the editor's own unmodified `.pdftemplate` project server-side and
+  the Excel column schema derived from its field mapping — one field list, not two.
+  `TemplateProjectService`.
+- `DirectBatchService` validates/previews participant Excel against that schema (duplicate/unknown/
+  missing-required columns, leading zeros preserved as strings) and confirms a batch idempotently
+  via a client-supplied `idempotency_key` (`certificate_batches.idempotency_key`, unique).
+- `ReservationFinalizeService`: identity is the reservation id, never a filename. Idempotent on
+  matching PDF bytes (safe retry); a genuinely different PDF for an already-finalized reservation is
+  a 409, never a silent overwrite. Codeword uniqueness is checked across `certificates`,
+  `certificate_batch_reservations`, and `qr_certificates` before minting.
+- `BatchZipService` streams already-stored PDFs with stable, numbered filenames in original
+  spreadsheet order — never re-renders, never mints new records.
+- pdfeditor side (separate repo): a new, additive `studio.html` entry (`src/integration/`) reuses
+  the standalone app's own `<AppInner/>` (Design tab, one-line export change, zero behavior change)
+  and drives the exact same `planRow`/`generateFilledPdf`/`runBatch` pipeline `ExportDialog` uses
+  for Generate mode, uploading each row automatically instead of triggering a browser download.
+  `index.html`/the standalone entry point are completely unmodified.
+- **Found and fixed only by driving the real embedded Studio end-to-end in a browser** (feature
+  tests alone did not catch these): `Storage::disk()->response()`/`->download()` return
+  `StreamedResponse`/`BinaryFileResponse`, not `Illuminate\Http\Response` (4 controller methods had
+  the wrong type hint, each a 500 the first time it was actually called); PHP never populates
+  `$_FILES` for a literal PUT request even with a multipart body (fixed with Laravel's own
+  `_method=PUT` spoofing); `ZipArchive::OVERWRITE` alone fails on a freshly-`tempnam()`'d file
+  (needs `CREATE|OVERWRITE`); and the most serious — `reservations[].data` is keyed by editor field
+  id but a project's field mapping resolves values by column name, so without a translation table
+  every generated PDF came back as a blank template with **no error reported anywhere** ("3/3
+  finalized" shown as success). Fixed by adding `fields: {id, column}[]` to the manifest response;
+  regression-tested in `PdfStudioTest::test_manifest_exposes_field_id_to_column_mapping_...`.
+- **Verified live** (see the session's final report for the full trace): template saved with a
+  hand-drawn QR field via the real editor UI, 3-row participant spreadsheet uploaded/previewed/
+  confirmed, all 3 PDFs generated and auto-uploaded with no manual file handoff, QR codes decoded
+  from the real PDF bytes (not assumed) and each resolved on the live public verification page to
+  the correct recipient, a partially-completed batch resumed correctly (completed rows untouched,
+  same certificate ids), and a re-downloaded batch ZIP was byte-identical (sha256) across two
+  requests.
+- **Known limitations**: MySQL-specific concurrency (`lockForUpdate()` races) could not be exercised
+  in this environment (sqlite only); finalize is synchronous per-request, not queued; no UI to
+  retry a single failed row without reopening the batch.
+- Tests: `tests/Feature/Admin/PdfStudioTest.php` (10 tests) plus the full existing suite —
+  204/204 passing.
