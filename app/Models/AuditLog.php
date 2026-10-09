@@ -7,6 +7,7 @@ use App\Enums\DeletableRecordType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * Append-only — see the audit_logs migration's docblock and
@@ -54,9 +55,13 @@ class AuditLog extends Model
         return $this->belongsTo(DeletionRequest::class, 'deletion_request_id');
     }
 
-    /** Resolves the record this event was about — `withTrashed()`, since most events point at a record that is, by now, soft-deleted. Used only by the internal Logbook, never the public verification page. */
+    /** Resolves the record this event was about — `withTrashed()` where the model supports it, since most deletion events point at a record that is, by now, soft-deleted (Form has no soft deletes; it is archived, never removed). Used only by the internal Logbook, never the public verification page. */
     public function record(): ?Model
     {
-        return ($this->record_type->modelClass())::withTrashed()->find($this->record_id);
+        $class = $this->record_type->modelClass();
+
+        return in_array(SoftDeletes::class, class_uses_recursive($class), true)
+            ? $class::withTrashed()->find($this->record_id)
+            : $class::query()->find($this->record_id);
     }
 }

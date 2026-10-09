@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\EventController;
+use App\Http\Controllers\FormController;
 use App\Http\Controllers\PageController;
 use App\Http\Controllers\VerificationController;
 use App\Services\Certificates\VerificationCodewordService;
@@ -41,6 +42,20 @@ Route::get('/certificate/verify/{codeword}', [VerificationController::class, 'sh
     ->where('codeword', VerificationCodewordService::ACCEPTED_PATTERN)
     ->middleware('throttle:60,1')
     ->name('certificate.verify');
+
+/*
+|--------------------------------------------------------------------------
+| Public dynamic forms
+|--------------------------------------------------------------------------
+| Built in the admin Form Builder -- see docs/FORM_BUILDER.md. Only
+| published forms resolve (FormController 404s anything else). The POST is
+| throttled per IP; 30/min leaves room for many people registering from one
+| shared campus network while still blunting scripted spam.
+*/
+Route::get('/forms/{form:slug}', [FormController::class, 'show'])->name('forms.show');
+Route::post('/forms/{form:slug}', [FormController::class, 'submit'])
+    ->middleware('throttle:30,1')
+    ->name('forms.submit');
 
 /*
 |--------------------------------------------------------------------------

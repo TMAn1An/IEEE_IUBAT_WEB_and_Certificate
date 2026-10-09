@@ -16,6 +16,8 @@ process required in production.
 - **`docs/ARCHITECTURE.md`** — folder layout, data flow, chosen packages and why.
 - **`docs/DATABASE_DESIGN.md`**, **`docs/CERTIFICATE_SYSTEM.md`**, **`docs/TEMPLATE_EDITOR.md`** —
   the certificate system in detail.
+- **`docs/FORM_BUILDER.md`**: the general-purpose dynamic Form Builder (admin builder, public
+  `/forms/{slug}`, submissions, Excel export).
 - **`docs/SECURITY.md`**, **`docs/TESTING.md`** — the security and testing checklists.
 - **`docs/DEPLOYMENT_CPANEL.md`** — how this gets deployed to the target hosting.
 - **`docs/MIGRATION_PLAN.md`** — the exact URL map being preserved from the original site.

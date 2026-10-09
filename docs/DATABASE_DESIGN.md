@@ -331,6 +331,19 @@ No route/policy in this codebase ever updates or deletes a row here — see
 
 Indexed: (`record_type`, `record_id`), `event_type`, `actor_id`.
 
+Since the Form Builder, `record_type` may also be `form` and `event_type` one of the `form_*` events —
+see `docs/FORM_BUILDER.md` §Audit integration. `snapshot` then holds the form's name/slug/status/version.
+
+## `forms`, `form_fields`, `form_submissions`, `form_submission_values` — Form Builder
+
+A general-purpose, certificate-independent module. Full column-by-column description, JSON shapes and
+the historical-snapshot rules are in `docs/FORM_BUILDER.md` §Database schema. In short:
+
+- `forms` (unique `slug`, `status`, `settings`/`style_settings` JSON, custom code, `lock_version`);
+- `form_fields` (unique (`form_id`, `key`) including archived fields; `is_active = false` = archived);
+- `form_submissions` (no update/delete route; `form_version` snapshot);
+- `form_submission_values` (key/label/type/value/display-value snapshots; `form_field_id` nullable).
+
 ## Enums (`App\Enums\*`)
 
 Every `status`/`role`/`field_type` column is a plain `string` at the database level, cast to a PHP
@@ -346,9 +359,10 @@ autocompletion + a `label()` method for display text in one place.
 - `CertificateStatus`: `Active`, `Revoked`, `Reissued`, `GenerationFailed`
 - `QrCategoryFieldType`: `Text`, `LongText`, `Number`, `Date`, `Dropdown` (simple QR tool)
 - `QrCertificateStatus`: `Active`, `Revoked` (simple QR tool)
-- `DeletableRecordType`: `QrCertificate`, `Certificate` (Phase 7 — the safe record-type mapping)
+- `DeletableRecordType`: `QrCertificate`, `Certificate` (Phase 7 — the safe record-type mapping), `Form` (audit-only; `isDeletable()` is false)
 - `DeletionRequestStatus`: `Pending`, `Approved`, `Rejected`, `Completed` (Phase 7)
-- `AuditEventType`: `DeletionRequested`, `DeletionApproved`, `DeletionRejected`, `RecordSoftDeleted` (Phase 7)
+- `AuditEventType`: `DeletionRequested`, `DeletionApproved`, `DeletionRejected`, `RecordSoftDeleted` (Phase 7), `FormCreated`, `FormUpdated`, `FormPublished`, `FormDeactivated`, `FormArchived`, `FormRestored`, `FormDuplicated` (Form Builder)
+- `FormStatus`: `Draft`, `Active`, `Inactive`, `Archived`; `FormFieldType`: 18 builder element types; `FormAvailabilityState` (not stored) — see `docs/FORM_BUILDER.md`
 
 ## Not built yet (deliberately, kept lean phase by phase)
 

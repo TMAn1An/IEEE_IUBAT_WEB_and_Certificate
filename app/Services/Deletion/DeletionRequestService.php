@@ -31,6 +31,12 @@ class DeletionRequestService
      */
     public function request(DeletableRecordType $type, int $recordId, User $requester, string $reason): DeletionRequest
     {
+        // Audit-only record types (e.g. Form) share the enum so they can be
+        // logged, but are never valid deletion targets.
+        if (! $type->isDeletable()) {
+            throw new \LogicException("Record type [{$type->value}] cannot be deleted.");
+        }
+
         return DB::transaction(function () use ($type, $recordId, $requester, $reason) {
             $record = $this->findActiveRecord($type, $recordId);
             if ($record === null) {

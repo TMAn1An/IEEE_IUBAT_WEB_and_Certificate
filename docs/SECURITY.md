@@ -53,7 +53,32 @@ new user-facing surface is added.
 - The public verification page in particular renders only escaped, template-approved
   (`show_on_verification = true`) fields — see `docs/CERTIFICATE_SYSTEM.md`.
 
+### Form Builder (admin-authored HTML/CSS, public submissions)
+
+Full detail in `docs/FORM_BUILDER.md`. Summary of the controls:
+
+- **HTML** (HTML-block fields, custom HTML before/after) is sanitized by `FormHtmlSanitizer`
+  (symfony/html-sanitizer allowlist) on save **and** on every render: no scripts, iframes, forms,
+  `on*` handlers, `style` attributes, or non-http(s)/mailto/tel URLs. These are the only `{!! !!}`
+  outputs in the form renderer.
+- **Custom CSS** (Super Admin only) is scoped to `#ff-form-{id}` at render time by `FormCssScoper`
+  (`html`/`body`/`:root` → the form wrapper; `@import`/`@font-face`/other at-rules dropped; nested
+  blocks dropped; `<` escaped so `</style>` can't break out).
+- **Custom JavaScript** is stored only and never rendered or executed anywhere.
+- **Design values** are `#rrggbb` colors, bounded integers or enum keys mapped server-side to CSS.
+  Free text never reaches a stylesheet, and values are re-normalized at render time.
+- **Submissions** are validated from the stored definition only: unknown keys rejected, option values
+  allow-listed, hidden-by-condition fields ignored, hidden/read-only fields server-valued.
+  Submitted values are escaped everywhere in the admin, and the Excel export uses
+  `ExcelFormulaGuard` + explicit string cells.
+- The public layout prints its page title raw (`{!! $pageTitle !!}`), so form titles are passed through
+  `e()` first. A test covers a `</title><script>` title.
+- `redirect_url` accepts http/https only. The public POST is throttled to 30/min/IP.
+
 ## IDOR / access control
+
+- Form builder: a save payload may only reference field ids of the form being saved (cross-form ids
+  → 422), and form submissions are bound with `scopeBindings()` (another form's submission id → 404).
 
 - Certificate and template IDs are not treated as secrets, but every admin route that loads a
   specific record (a certificate, a template, a batch, a user) checks ownership/permission via a

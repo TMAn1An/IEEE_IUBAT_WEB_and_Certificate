@@ -942,3 +942,53 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   documented self-approval limitation, direct-delete prevention, deleted-records views, data
   retention); §Revocation and §Reissue cross-reference the new `audit_logs` table's actual current
   scope instead of describing it as purely aspirational.
+
+## Form Builder — general-purpose dynamic forms (2026-10-09)
+
+- **New, independent module** (no coupling to the QR tool, certificate templates, PDF or issuance
+  code): admins build and style forms in a three-column visual builder, publish them at
+  `/forms/{slug}`, and view/export submissions. Full reference: `docs/FORM_BUILDER.md`.
+- **New tables** (4 additive migrations): `forms`, `form_fields`, `form_submissions`,
+  `form_submission_values`. Values snapshot key/label/type/display value so old submissions survive
+  renames, option edits and archiving. Fields with submissions are archived, never deleted, and their
+  keys stay reserved and locked.
+- **18 element types** (text, long text, email, number, phone, date, time, date & time, dropdown,
+  radio, checkbox group, single checkbox, hidden, heading, paragraph, divider, section, HTML block),
+  each defined once in `App\Enums\FormFieldType`. Responsive widths (100/75/66/50/33/25 %) on a
+  12-column grid.
+- **Design system**: form, label, input, button and message settings stored as structured JSON, validated
+  as `#rrggbb` / bounded px / enum keys, emitted as `--ff-*` CSS custom properties consumed by one
+  shared stylesheet (`public/css/forms.css`), so the builder preview and the public page render
+  identically. Optional per-field overrides.
+- **Conditional visibility** (show/hide, all/any; equals, not_equals, contains, is_empty,
+  is_not_empty), evaluated identically in PHP (`FormVisibilityResolver`, authoritative) and JS
+  (`public/js/forms/form-logic.js`). Conditions may only reference earlier fields (no cycles), and
+  sections cascade.
+- **Security**: HTML sanitized with the new `symfony/html-sanitizer` dependency (recorded in
+  `docs/ARCHITECTURE.md` §6) on save and render; custom CSS scoped per form by `FormCssScoper`;
+  custom JS stored only, never executed; custom code limited to super_admin; submissions validated
+  from the stored definition (unknown keys and invalid options rejected, hidden fields ignored);
+  Excel export uses `ExcelFormulaGuard` + explicit string cells; public POST throttled.
+- **Save reliability**: one transaction per save with the form row locked, optimistic locking via
+  `forms.lock_version` (409 on a stale save), draft-only autosave alongside explicit Save/Publish.
+  A bug found during testing was fixed before it shipped: Laravel's `validated()` rebuilds arrays in
+  rule order, which reordered fields with extra per-type rules (e.g. an HTML block) ahead of
+  earlier ones. Normalizers now restore input order from the numeric indexes; a regression test
+  covers it.
+- **Changes to existing code, and why**:
+  - `App\Enums\DeletableRecordType` gained an audit-only `Form` case (with `isDeletable()`), so form
+    actions land in the existing Logbook instead of a second audit system.
+    `DeletionRequestService::request()` now refuses non-deletable types (a guard only; the deletion
+    workflow is unchanged).
+  - `App\Enums\AuditEventType` gained `form_created/updated/published/deactivated/archived/restored/
+    duplicated`.
+  - `AuditLog::record()` only calls `withTrashed()` when the model uses `SoftDeletes` (`Form` doesn't),
+    and the Logbook view shows a form's name/URL for form entries.
+  - The admin layout gained a "Forms" nav section and an optional `$head` slot (used by the builder
+    for its stylesheets + CSRF meta). No existing nav entry changed.
+  - `routes/web.php` gained `/forms/{slug}` (new URL; no existing public URL touched).
+- **Tests**: 69 new tests (builder, submissions, export, sanitizer, CSS scoper, visibility resolver).
+  The full suite is 197 tests. The 3 failures in `CertificateIssuanceTest` were already present before
+  this change: on Windows the PDF fixture written to the faked `local` disk goes missing between tests
+  ("PDF file not found …/fixture.pdf"), and all three pass when run alone. Manual QA was done in a
+  real browser (checklist in `docs/TESTING.md` §Form Builder).

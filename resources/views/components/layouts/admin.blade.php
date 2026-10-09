@@ -8,6 +8,7 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="/assets/img/favicon.png" type="image/png">
 <link rel="stylesheet" href="/css/admin.css">
+{{ $head ?? '' }}
 </head>
 <body>
 <div class="admin-shell">
@@ -24,6 +25,10 @@
       <li><a href="{{ route('admin.qr.groups.index') }}" class="{{ request()->routeIs('admin.qr.groups.*') ? 'is-active' : '' }}">Groups</a></li>
       <li><a href="{{ route('admin.qr.import.choose-group') }}" class="{{ request()->routeIs('admin.qr.import.*') ? 'is-active' : '' }}">Import Excel</a></li>
       <li><a href="{{ route('admin.qr.categories.index') }}" class="{{ request()->routeIs('admin.qr.categories.*') ? 'is-active' : '' }}">QR Categories</a></li>
+      <li class="admin-nav__heading">Forms</li>
+      <li><a href="{{ route('admin.forms.index') }}" class="{{ request()->routeIs('admin.forms.index', 'admin.forms.edit', 'admin.forms.preview') ? 'is-active' : '' }}">All Forms</a></li>
+      <li><a href="{{ route('admin.forms.create') }}" class="{{ request()->routeIs('admin.forms.create') ? 'is-active' : '' }}">Create Form</a></li>
+      <li><a href="{{ route('admin.forms.submissions.overview') }}" class="{{ request()->routeIs('admin.forms.submissions.*') ? 'is-active' : '' }}">Submissions</a></li>
       <li class="admin-nav__heading">Advanced / Future</li>
       <li><a href="{{ route('admin.templates.index') }}" class="{{ request()->routeIs('admin.templates.*') ? 'is-active' : '' }}">Certificate Templates</a></li>
       <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.*') ? 'is-active' : '' }}">Advanced Certificates</a></li>

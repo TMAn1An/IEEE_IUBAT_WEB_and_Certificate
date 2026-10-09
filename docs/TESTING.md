@@ -131,6 +131,29 @@ deploy):
 - [ ] Landscape and portrait source PDFs both behave correctly.
 - [ ] At least one differently-sized page (e.g. A4 vs. Letter) behaves correctly.
 
+## Form Builder
+
+Automated (`tests/Feature/Admin/FormBuilderTest.php`, `tests/Feature/FormSubmissionTest.php`,
+`tests/Feature/Admin/FormSubmissionExportTest.php`, `tests/Unit/Forms/*`): creation, persistence of
+fields/order/options/widths/design/colors/custom CSS/conditions after reload, order regression,
+unique/valid keys, cross-form field ids, optimistic locking (409), HTML sanitization (save + render),
+CSS scoping, custom-code restricted to super_admin, conditional visibility (server resolver and
+required-only-when-visible), section cascading, public submission + snapshots, inactive/draft/private
+forms, unknown keys, invalid choices, manipulated hidden/read-only values, limits/schedule,
+rename/option-edit/archive history, key locking, Excel columns + formula guard, duplication without
+submissions, lifecycle + Logbook events, authorization and escaping. Tests build forms through the
+real HTTP endpoints (`tests/Concerns/BuildsForms.php`).
+
+**Manual QA checklist** (run before shipping builder/renderer changes):
+- [ ] Create a form; add 8+ field types; change widths; change colors, border and radius.
+- [ ] Add dropdown options, an HTML block (try a `<script>`: it must disappear), custom CSS.
+- [ ] Configure a conditional field; confirm the canvas shows "Hidden by condition".
+- [ ] Save, reload: everything is still present (fields, order, widths, colors, options, rules, CSS, HTML).
+- [ ] Publish; submit the public form (the conditional field appears only when its condition matches).
+- [ ] View the submission; export Excel (values readable, `=…` values prefixed with `'`).
+- [ ] Rename a field; the old submission still shows the original label plus "Now labelled …".
+- [ ] Check the public form at phone width (fields stack to full width).
+
 ## Development data
 
 Seeders/factories provide: a Super Admin and a Certificate Manager account (fake credentials only,
