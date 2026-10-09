@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "c9399bf45b2e0cb610464336aebce6de",
+    "content-hash": "41deebb2f065050828a841b06d5bf43c",
     "packages": [
         {
             "name": "brick/math",
@@ -6533,6 +6533,57 @@
             "time": "2025-12-02T11:56:42+00:00"
         },
         {
+            "name": "tman1an/formbuilder",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "../formbuilder",
+                "reference": "2b74a67f37889ad61cbd511382f63a6eb50ff7a0"
+            },
+            "require": {
+                "laravel/framework": "^11.0|^12.0",
+                "php": "^8.2",
+                "phpoffice/phpspreadsheet": "^5.0",
+                "symfony/html-sanitizer": "^7.3"
+            },
+            "require-dev": {
+                "laravel/pint": "^1.24",
+                "orchestra/testbench": "^10.0",
+                "phpunit/phpunit": "^11.5"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "TMAn1An\\FormBuilder\\FormBuilderServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "TMAn1An\\FormBuilder\\": "src/",
+                    "TMAn1An\\FormBuilder\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "TMAn1An\\FormBuilder\\Tests\\": "tests/"
+                }
+            },
+            "description": "Reusable Laravel Form Builder + simple Page Builder: visual builders, public forms and pages, submissions with image uploads, Excel export.",
+            "keywords": [
+                "form-builder",
+                "forms",
+                "laravel",
+                "page-builder",
+                "submissions"
+            ],
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
             "name": "vlucas/phpdotenv",
             "version": "v5.7.0",
             "source": {
@@ -9058,7 +9109,9 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "tman1an/formbuilder": 20
+    },
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

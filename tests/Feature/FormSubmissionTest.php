@@ -2,15 +2,15 @@
 
 namespace Tests\Feature;
 
-use App\Models\Form;
-use App\Models\FormField;
-use App\Models\FormSubmission;
-use App\Models\FormSubmissionValue;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\Concerns\BuildsForms;
 use Tests\TestCase;
+use TMAn1An\FormBuilder\Models\Form;
+use TMAn1An\FormBuilder\Models\FormField;
+use TMAn1An\FormBuilder\Models\FormSubmission;
+use TMAn1An\FormBuilder\Models\FormSubmissionValue;
 
 /**
  * Public /forms/{slug}: availability, server-side validation built from the
@@ -77,7 +77,7 @@ class FormSubmissionTest extends TestCase
             ->assertSee('name="interests[]"', false)
             ->assertSee('Computer Science')
             ->assertSee('data-ff-logic', false)
-            ->assertSee('/js/forms/form-runtime.js', false)
+            ->assertSee('js/form-runtime.js', false)
             ->assertSee('IEEE', false); // inside the normal site chrome
     }
 
@@ -122,7 +122,7 @@ class FormSubmissionTest extends TestCase
 
         // Visible (department = other): now required...
         $this->post("/forms/{$form->slug}", $this->validAnswers(['department' => 'other']))
-            ->assertSessionHasErrors(['other_department']);
+            ->assertSessionHasErrorsIn('form_'.$form->id, ['other_department']);
         $this->assertSame(1, FormSubmission::count());
 
         // ...and stored when given.
@@ -143,7 +143,7 @@ class FormSubmissionTest extends TestCase
         ]);
 
         $this->post("/forms/{$form->slug}", ['attending' => 'no', 'notes' => 'n/a'])->assertSessionHasNoErrors();
-        $this->post("/forms/{$form->slug}", ['attending' => 'yes', 'notes' => 'n/a'])->assertSessionHasErrors(['flight']);
+        $this->post("/forms/{$form->slug}", ['attending' => 'yes', 'notes' => 'n/a'])->assertSessionHasErrorsIn('form_'.$form->id, ['flight']);
     }
 
     public function test_server_validation_follows_field_types(): void
@@ -156,10 +156,10 @@ class FormSubmissionTest extends TestCase
             'age' => '12',
             'arrival' => '02/11/2026',
             'phone' => '<script>',
-        ]))->assertSessionHasErrors(['full_name', 'email', 'age', 'arrival', 'phone']);
+        ]))->assertSessionHasErrorsIn('form_'.$form->id, ['full_name', 'email', 'age', 'arrival', 'phone']);
 
         $this->post("/forms/{$form->slug}", $this->validAnswers(['full_name' => '', 'consent' => null]))
-            ->assertSessionHasErrors(['full_name', 'consent']);
+            ->assertSessionHasErrorsIn('form_'.$form->id, ['full_name', 'consent']);
 
         $this->assertSame(0, FormSubmission::count());
     }
@@ -168,10 +168,10 @@ class FormSubmissionTest extends TestCase
     {
         $form = $this->registrationForm();
 
-        $this->post("/forms/{$form->slug}", $this->validAnswers(['department' => 'hacked']))->assertSessionHasErrors(['department']);
-        $this->post("/forms/{$form->slug}", $this->validAnswers(['tshirt' => 'xxl']))->assertSessionHasErrors(['tshirt']);
-        $this->post("/forms/{$form->slug}", $this->validAnswers(['interests' => ['robotics', 'injected']]))->assertSessionHasErrors(['interests.1']);
-        $this->post("/forms/{$form->slug}", $this->validAnswers(['department' => ['cse']]))->assertSessionHasErrors(['department']);
+        $this->post("/forms/{$form->slug}", $this->validAnswers(['department' => 'hacked']))->assertSessionHasErrorsIn('form_'.$form->id, ['department']);
+        $this->post("/forms/{$form->slug}", $this->validAnswers(['tshirt' => 'xxl']))->assertSessionHasErrorsIn('form_'.$form->id, ['tshirt']);
+        $this->post("/forms/{$form->slug}", $this->validAnswers(['interests' => ['robotics', 'injected']]))->assertSessionHasErrorsIn('form_'.$form->id, ['interests.1']);
+        $this->post("/forms/{$form->slug}", $this->validAnswers(['department' => ['cse']]))->assertSessionHasErrorsIn('form_'.$form->id, ['department']);
 
         $this->assertSame(0, FormSubmission::count());
     }
@@ -181,7 +181,7 @@ class FormSubmissionTest extends TestCase
         $form = $this->registrationForm();
 
         $this->post("/forms/{$form->slug}", $this->validAnswers(['is_admin' => '1']))
-            ->assertSessionHasErrors(['form']);
+            ->assertSessionHasErrorsIn('form_'.$form->id, ['form']);
 
         $this->assertSame(0, FormSubmission::count());
     }

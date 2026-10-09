@@ -2,10 +2,10 @@
 
 namespace Tests\Concerns;
 
-use App\Models\Form;
 use App\Models\User;
-use App\Services\Forms\Style\FormStyleSchema;
 use Illuminate\Testing\TestResponse;
+use TMAn1An\FormBuilder\Models\Form;
+use TMAn1An\FormBuilder\Styling\FormStyleSchema;
 
 /**
  * Builds forms the way the real builder does: POST /admin/forms, then a

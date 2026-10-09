@@ -1,7 +1,6 @@
 <?php
 
 use App\Http\Controllers\EventController;
-use App\Http\Controllers\FormController;
 use App\Http\Controllers\PageController;
 use App\Http\Controllers\VerificationController;
 use App\Services\Certificates\VerificationCodewordService;
@@ -45,17 +44,13 @@ Route::get('/certificate/verify/{codeword}', [VerificationController::class, 'sh
 
 /*
 |--------------------------------------------------------------------------
-| Public dynamic forms
+| Public builder forms and pages
 |--------------------------------------------------------------------------
-| Built in the admin Form Builder -- see docs/FORM_BUILDER.md. Only
-| published forms resolve (FormController 404s anything else). The POST is
-| throttled per IP; 30/min leaves room for many people registering from one
-| shared campus network while still blunting scripted spam.
+| /forms/{slug} (forms.show / forms.submit, POST throttled 30/min/IP) and
+| /pages/{slug} (pages.show) are registered by the tman1an/formbuilder
+| package -- see config/formbuilder.php and docs/FORM_BUILDER.md. Only
+| published forms/pages resolve; everything else 404s.
 */
-Route::get('/forms/{form:slug}', [FormController::class, 'show'])->name('forms.show');
-Route::post('/forms/{form:slug}', [FormController::class, 'submit'])
-    ->middleware('throttle:30,1')
-    ->name('forms.submit');
 
 /*
 |--------------------------------------------------------------------------

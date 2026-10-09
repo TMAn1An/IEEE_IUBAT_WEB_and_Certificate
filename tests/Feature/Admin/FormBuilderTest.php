@@ -4,17 +4,17 @@ namespace Tests\Feature\Admin;
 
 use App\Enums\AuditEventType;
 use App\Enums\DeletableRecordType;
-use App\Enums\FormFieldType;
-use App\Enums\FormStatus;
 use App\Models\AuditLog;
-use App\Models\Form;
-use App\Models\FormField;
 use App\Models\User;
 use App\Services\Deletion\DeletionRequestService;
-use App\Services\Forms\Style\FormStyleSchema;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\BuildsForms;
 use Tests\TestCase;
+use TMAn1An\FormBuilder\Enums\FormFieldType;
+use TMAn1An\FormBuilder\Enums\FormStatus;
+use TMAn1An\FormBuilder\Models\Form;
+use TMAn1An\FormBuilder\Models\FormField;
+use TMAn1An\FormBuilder\Styling\FormStyleSchema;
 
 /**
  * The admin Form Builder: creating forms, saving the full definition
@@ -43,7 +43,7 @@ class FormBuilderTest extends TestCase
         $this->get("/admin/forms/{$form->id}/edit")
             ->assertOk()
             ->assertSee('form-builder-data', false)
-            ->assertSee('/js/admin/form-builder.js', false);
+            ->assertSee('js/form-builder.js', false);
     }
 
     public function test_fields_options_order_widths_and_settings_persist_after_reload(): void

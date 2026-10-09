@@ -6,8 +6,6 @@ use App\Http\Controllers\Admin\CertificateController;
 use App\Http\Controllers\Admin\ComingSoonController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DeletionRequestController;
-use App\Http\Controllers\Admin\Forms\FormController;
-use App\Http\Controllers\Admin\Forms\FormSubmissionController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
@@ -172,32 +170,10 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/categories/{category}/fields/{field}/move-down', [QrCategoryFieldController::class, 'moveDown'])->name('categories.fields.move-down');
     });
 
-    // Dynamic Form Builder -- a general-purpose module, independent of the
-    // certificate/QR systems. Authorization: App\Policies\FormPolicy.
-    // Deliberately no DELETE route for forms or submissions: forms are
-    // archived, submissions are permanent. See docs/FORM_BUILDER.md.
-    Route::prefix('forms')->name('forms.')->group(function () {
-        Route::get('/', [FormController::class, 'index'])->name('index');
-        Route::get('/create', [FormController::class, 'create'])->name('create');
-        Route::post('/', [FormController::class, 'store'])->name('store');
-        // Literal segment -- registered before the {form}-bound routes.
-        Route::get('/submissions', [FormSubmissionController::class, 'overview'])->name('submissions.overview');
-
-        Route::get('/{form}/edit', [FormController::class, 'edit'])->name('edit');
-        Route::put('/{form}/builder', [FormController::class, 'update'])->name('update');
-        Route::post('/{form}/builder/sanitize', [FormController::class, 'sanitize'])->name('sanitize');
-        Route::get('/{form}/preview', [FormController::class, 'preview'])->name('preview');
-        Route::post('/{form}/publish', [FormController::class, 'publish'])->name('publish');
-        Route::post('/{form}/deactivate', [FormController::class, 'deactivate'])->name('deactivate');
-        Route::post('/{form}/archive', [FormController::class, 'archive'])->name('archive');
-        Route::post('/{form}/restore', [FormController::class, 'restore'])->name('restore');
-        Route::post('/{form}/duplicate', [FormController::class, 'duplicate'])->name('duplicate');
-
-        Route::get('/{form}/submissions', [FormSubmissionController::class, 'index'])->name('submissions.index');
-        Route::get('/{form}/submissions/export.xlsx', [FormSubmissionController::class, 'export'])->name('submissions.export');
-        // scopeBindings(): a submission id from another form 404s (no cross-form IDOR).
-        Route::get('/{form}/submissions/{submission}', [FormSubmissionController::class, 'show'])->name('submissions.show')->scopeBindings();
-    });
+    // Form + Page Builder: the routes (/admin/forms/..., /admin/pages/...,
+    // named admin.forms.* / admin.pages.*) are registered by the
+    // tman1an/formbuilder package with this app's 'auth' + 'active'
+    // middleware -- see config/formbuilder.php and docs/FORM_BUILDER.md.
 
     // Controlled deletion — request -> Super Admin review -> approve/reject.
     // Covers both simple QR records and advanced certificates through the

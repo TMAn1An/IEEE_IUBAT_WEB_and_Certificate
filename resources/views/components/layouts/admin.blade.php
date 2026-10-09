@@ -29,6 +29,9 @@
       <li><a href="{{ route('admin.forms.index') }}" class="{{ request()->routeIs('admin.forms.index', 'admin.forms.edit', 'admin.forms.preview') ? 'is-active' : '' }}">All Forms</a></li>
       <li><a href="{{ route('admin.forms.create') }}" class="{{ request()->routeIs('admin.forms.create') ? 'is-active' : '' }}">Create Form</a></li>
       <li><a href="{{ route('admin.forms.submissions.overview') }}" class="{{ request()->routeIs('admin.forms.submissions.*') ? 'is-active' : '' }}">Submissions</a></li>
+      <li class="admin-nav__heading">Pages</li>
+      <li><a href="{{ route('admin.pages.index') }}" class="{{ request()->routeIs('admin.pages.index', 'admin.pages.edit', 'admin.pages.preview') ? 'is-active' : '' }}">All Pages</a></li>
+      <li><a href="{{ route('admin.pages.create') }}" class="{{ request()->routeIs('admin.pages.create') ? 'is-active' : '' }}">Create Page</a></li>
       <li class="admin-nav__heading">Advanced / Future</li>
       <li><a href="{{ route('admin.templates.index') }}" class="{{ request()->routeIs('admin.templates.*') ? 'is-active' : '' }}">Certificate Templates</a></li>
       <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.*') ? 'is-active' : '' }}">Advanced Certificates</a></li>

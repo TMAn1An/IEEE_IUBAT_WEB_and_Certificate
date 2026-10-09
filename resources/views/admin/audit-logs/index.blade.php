@@ -4,7 +4,7 @@
 <x-layouts.admin title="Logbook" wide>
   <p style="color:var(--muted);margin-top:-4px">
     Read-only audit trail of every deletion request, approval, rejection, and soft deletion, plus
-    form-builder actions (created, updated, published, deactivated, archived, duplicated) — see
+    form and page builder actions (created, updated, published, deactivated, archived, duplicated) — see
     docs/CERTIFICATE_SYSTEM.md §Logbook immutability. There is no edit or delete action anywhere on
     this page, including for Super Admin.
   </p>
@@ -69,6 +69,9 @@
             @if ($log->record_type === DeletableRecordType::Form)
               <td>{{ $record?->name ?? ($log->snapshot['name'] ?? '—') }}</td>
               <td><code style="font-size:.8em">/forms/{{ $record?->slug ?? ($log->snapshot['slug'] ?? '') }}</code></td>
+            @elseif ($log->record_type === DeletableRecordType::Page)
+              <td>{{ $record?->title ?? ($log->snapshot['name'] ?? '—') }}</td>
+              <td><code style="font-size:.8em">/pages/{{ $record?->slug ?? ($log->snapshot['slug'] ?? '') }}</code></td>
             @else
             <td>{{ $record?->recipient_name ?? '—' }}</td>
             <td>
