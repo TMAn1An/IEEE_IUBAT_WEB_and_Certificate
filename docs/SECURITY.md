@@ -53,15 +53,16 @@ new user-facing surface is added.
 - The public verification page in particular renders only escaped, template-approved
   (`show_on_verification = true`) fields — see `docs/CERTIFICATE_SYSTEM.md`.
 
-### Form Builder (admin-authored HTML/CSS, public submissions)
+### Form + Page Builder (package `tman1an/formbuilder`)
 
-Full detail in `docs/FORM_BUILDER.md`. Summary of the controls:
+Full detail in the package docs (`vendor/tman1an/formbuilder/docs/FORMS.md`, `PAGES.md`) and
+`docs/FORM_BUILDER.md`. Summary of the controls:
 
-- **HTML** (HTML-block fields, custom HTML before/after) is sanitized by `FormHtmlSanitizer`
+- **HTML** (HTML-block fields, custom HTML before/after) is sanitized by the package's `Support\HtmlSanitizer`
   (symfony/html-sanitizer allowlist) on save **and** on every render: no scripts, iframes, forms,
   `on*` handlers, `style` attributes, or non-http(s)/mailto/tel URLs. These are the only `{!! !!}`
   outputs in the form renderer.
-- **Custom CSS** (Super Admin only) is scoped to `#ff-form-{id}` at render time by `FormCssScoper`
+- **Custom CSS** (Super Admin only) is scoped to `#ff-form-{id}` at render time by the package's `Support\CssScoper`
   (`html`/`body`/`:root` → the form wrapper; `@import`/`@font-face`/other at-rules dropped; nested
   blocks dropped; `<` escaped so `</style>` can't break out).
 - **Custom JavaScript** is stored only and never rendered or executed anywhere.

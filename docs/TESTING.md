@@ -131,10 +131,16 @@ deploy):
 - [ ] Landscape and portrait source PDFs both behave correctly.
 - [ ] At least one differently-sized page (e.g. A4 vs. Letter) behaves correctly.
 
-## Form Builder
+## Form + Page Builder
+
+The builders live in the `tman1an/formbuilder` package, which has its own full suite (run
+`vendor/bin/phpunit` inside the package repository). This app keeps host integration tests:
+`tests/Feature/Admin/PageBuilderIntegrationTest.php` (IEEE roles, Logbook, IEEE layouts,
+embedded forms) and the form tests below, which exercise the package through IEEE's real roles
+and Logbook.
 
 Automated (`tests/Feature/Admin/FormBuilderTest.php`, `tests/Feature/FormSubmissionTest.php`,
-`tests/Feature/Admin/FormSubmissionExportTest.php`, `tests/Unit/Forms/*`): creation, persistence of
+`tests/Feature/Admin/FormSubmissionExportTest.php`): creation, persistence of
 fields/order/options/widths/design/colors/custom CSS/conditions after reload, order regression,
 unique/valid keys, cross-form field ids, optimistic locking (409), HTML sanitization (save + render),
 CSS scoping, custom-code restricted to super_admin, conditional visibility (server resolver and

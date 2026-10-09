@@ -1012,3 +1012,34 @@ project-behavior changelog, not a raw git log — explain what changed and why i
 - **Note for later**: in production each PHP request ends and closes the handle, so this is harmless
   today. A long-running bulk-generation worker would keep one handle per template until garbage
   collection runs. Worth releasing explicitly when bulk generation is built.
+
+## Form + Page Builder moved into a reusable package (2026-10-10)
+
+- **Why**: the Form Builder has to be reusable in other Laravel projects and gain a simple Page
+  Builder, without keeping two diverging copies. Its canonical source is now the package
+  `tman1an/formbuilder` (https://github.com/TMAn1An/formbuilder). This app keeps only the
+  integration. See `docs/FORM_BUILDER.md`.
+- **Removed from this app** (now in the package, same behaviour): `App\Models\Form*`,
+  `App\Enums\Form*`, `App\Policies\FormPolicy`, `App\Services\Forms\*`, the form controllers and
+  requests, the form views, `public/css/forms.css`, `public/css/form-builder.css`,
+  `public/js/forms/*`, `public/js/admin/form-builder.js`, the form factories, the
+  sanitizer/CSS-scoper/visibility unit tests, and the four `2026_10_09_1000xx` form migrations.
+- **Data compatibility**: the package ships those four migrations with identical filenames and
+  identical schema, so existing databases keep every form/field/submission/value and only the new
+  migrations run. This was verified against the local database.
+- **Added to this app**: `config/formbuilder.php` (same URLs and route names as before:
+  `/admin/forms` → `admin.forms.*`, `/forms/{slug}` → `forms.show`), `App\FormBuilder\IeeeAuthorizer`
+  (super_admin vs certificate_manager), `App\FormBuilder\LogbookAuditLogger` (builder actions
+  still go to the Logbook), layout adapter components, Pages nav entries, audit-only
+  `DeletableRecordType::Page` and `AuditEventType::Page*`, and the Logbook view showing page
+  entries.
+- **New features (from the package)**: fully sizable submit button (width auto/full/custom
+  px/%/rem, min width/height, padding, border, weight, alignment), Image Upload field (private
+  storage, admin-only thumbnails, export links), View live / Copy public link, and the Page
+  Builder (`/pages/{slug}`, blocks incl. embedded forms and images).
+- **Composer**: `symfony/html-sanitizer` is no longer a direct requirement (the package requires
+  it). During local development the package is consumed via a path repository (`../formbuilder`).
+  **Before this branch is pushed**, `composer.json` must switch to the GitHub VCS repository with
+  a tagged version, and `composer.lock` must be regenerated (see `docs/FORM_BUILDER.md`).
+- **Tests**: IEEE keeps its form tests as host integration tests (IEEE roles, Logbook, layouts)
+  and adds `PageBuilderIntegrationTest`. The package has its own full suite.

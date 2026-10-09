@@ -50,7 +50,12 @@ directly HTTP-reachable. Verify by requesting `https://domain/.env` and
    directory (see layout above).
 3. **`.env`**: copy `.env.example` to `.env`, fill in real DB credentials, `APP_URL`, mail settings
    if used. Never commit this file.
-4. **Dependencies**: `composer install --no-dev --optimize-autoloader`.
+4. **Dependencies**: `composer install --no-dev --optimize-autoloader`. This also installs the
+   Form + Page Builder package `tman1an/formbuilder` from its public GitHub repository at the
+   commit pinned in `composer.lock` (no credentials needed). See `docs/FORM_BUILDER.md`. The
+   package serves its own CSS/JS and page images through routes, so it adds no asset or
+   `storage:link` step. Uploads land in `storage/app/private/form-builder/submissions` (form
+   images) and `storage/app/public/form-builder/pages` (page images).
 5. **App key**: `php artisan key:generate` (only if `.env` doesn't already have one from a prior
    deploy — never regenerate on top of a live `.env` with existing encrypted data without a plan).
 6. **Migrations**: `php artisan migrate --force` (`--force` required since `APP_ENV=production`
