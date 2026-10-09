@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "41deebb2f065050828a841b06d5bf43c",
+    "content-hash": "42ad2b00918e0d21e9ad14b8a2955de0",
     "packages": [
         {
             "name": "brick/math",
@@ -6535,10 +6535,16 @@
         {
             "name": "tman1an/formbuilder",
             "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/TMAn1An/formbuilder.git",
+                "reference": "80f4b10598b06250ea38b44551531e2d68bc4dfd"
+            },
             "dist": {
-                "type": "path",
-                "url": "../formbuilder",
-                "reference": "2b74a67f37889ad61cbd511382f63a6eb50ff7a0"
+                "type": "zip",
+                "url": "https://api.github.com/repos/TMAn1An/formbuilder/zipball/80f4b10598b06250ea38b44551531e2d68bc4dfd",
+                "reference": "80f4b10598b06250ea38b44551531e2d68bc4dfd",
+                "shasum": ""
             },
             "require": {
                 "laravel/framework": "^11.0|^12.0",
@@ -6551,6 +6557,7 @@
                 "orchestra/testbench": "^10.0",
                 "phpunit/phpunit": "^11.5"
             },
+            "default-branch": true,
             "type": "library",
             "extra": {
                 "laravel": {
@@ -6578,10 +6585,11 @@
                 "page-builder",
                 "submissions"
             ],
-            "transport-options": {
-                "symlink": true,
-                "relative": true
-            }
+            "support": {
+                "source": "https://github.com/TMAn1An/formbuilder/tree/main",
+                "issues": "https://github.com/TMAn1An/formbuilder/issues"
+            },
+            "time": "2026-10-09T18:30:13+00:00"
         },
         {
             "name": "vlucas/phpdotenv",

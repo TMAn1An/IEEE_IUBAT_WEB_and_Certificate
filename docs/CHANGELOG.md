@@ -1043,3 +1043,15 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   a tagged version, and `composer.lock` must be regenerated (see `docs/FORM_BUILDER.md`).
 - **Tests**: IEEE keeps its form tests as host integration tests (IEEE roles, Logbook, layouts)
   and adds `PageBuilderIntegrationTest`. The package has its own full suite.
+
+## Form + Page Builder consumed from GitHub (2026-10-10)
+
+- The package's canonical repository https://github.com/TMAn1An/formbuilder is now published.
+  `composer.json` uses it as a **VCS repository** (`"tman1an/formbuilder": "dev-main"`) instead of
+  the temporary local path repository `../formbuilder`.
+- `composer.lock` pins the package to commit `80f4b10`, fetched from GitHub (`source` = the git
+  URL, `dist` = the GitHub zipball). It no longer contains any local filesystem path, so fresh
+  clones and the cPanel server can run `composer install` without the package folder next to
+  them.
+- No code change: the installed package is the same commit the tests already ran against.
+- Follow-up: once the package tags releases (e.g. `v0.1.0`), switch the constraint to `^0.1`.

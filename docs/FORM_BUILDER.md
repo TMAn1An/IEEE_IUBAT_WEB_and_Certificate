@@ -63,15 +63,18 @@ Only set `FORMBUILDER_MEDIA_DELIVERY=url` if you want direct `/storage/...` URLs
 
 ## How IEEE consumes the package
 
-### Production / committed state (target)
+### Committed state (what production uses)
 
 ```json
 "repositories": [{ "type": "vcs", "url": "https://github.com/TMAn1An/formbuilder" }],
-"require": { "tman1an/formbuilder": "^0.1" }
+"require": { "tman1an/formbuilder": "dev-main" }
 ```
 
-`composer.lock` pins the exact package commit. The server's `composer install --no-dev` fetches it
-from GitHub (public repository, no credentials, no Packagist).
+`composer.lock` pins the exact package commit (`source.reference`). The server's
+`composer install --no-dev` fetches exactly that commit from GitHub (public repository, no
+credentials, no Packagist), so pushing to the package's `main` never changes this site until
+someone runs `composer update tman1an/formbuilder` here and commits the new lock. Once the package
+publishes version tags, prefer a version constraint (e.g. `"^0.1"`) over `dev-main`.
 
 ### Local development against a working copy
 
@@ -87,9 +90,8 @@ are live. **Before committing this app**, switch back to the VCS repository and 
 (see the package's `docs/DEVELOPMENT.md`). A `composer.lock` that points at a local path can't be
 installed on the server.
 
-> Status at the time of writing: the package has not been pushed yet, so this repository is
-> temporarily configured with the path repository above. Switching to the VCS repository is the
-> first step after the package is pushed and tagged `v0.1.0` (see `docs/CHANGELOG.md`).
+> Never commit `composer.json` / `composer.lock` while the path repository is configured: the lock
+> would point at `../formbuilder`, which does not exist on the server or in a fresh clone.
 
 ### Updating the package
 
