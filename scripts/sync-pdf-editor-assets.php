@@ -16,7 +16,6 @@
  *
  * Build the source first in the pdfeditor checkout: `npm run build`.
  */
-
 if ($argc !== 3) {
     fwrite(STDERR, "Usage: php scripts/sync-pdf-editor-assets.php <path-to-pdfeditor-dist> <commit-sha>\n");
     exit(1);

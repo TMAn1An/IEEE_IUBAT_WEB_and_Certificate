@@ -4,14 +4,48 @@ The full lifecycle: template -> field definitions -> generation (single or bulk)
 verification -> revocation/reissue. Read `docs/DATABASE_DESIGN.md` alongside this for the schema
 each step reads/writes.
 
+## Read this first: the current admin workflow
+
+As of the **admin workflow cleanup** (see `docs/CHANGELOG.md`), there are exactly two independent
+admin tools, both reachable directly from the nav/dashboard:
+
+- **PDF Certificates** — design once in the real, embedded pdfeditor-based editor ("PDF Studio"),
+  then generate a batch from a spreadsheet. One connected flow: `/admin/pdf-certificates` ->
+  create a template (name + demo PDF, one step) -> the editor, already loaded -> upload
+  participants -> generate -> download. Full contract: `docs/PDF_STUDIO_INTEGRATION.md`.
+- **QR Generator** (`/admin/qr-tool/...`) — fully independent old-tool-parity simple QR
+  generator/importer, untouched by the cleanup. See "Simple QR tool" below.
+
+Form + Page Builder (`/admin/forms`, `/admin/pages`) are a separate package, also untouched.
+
+**Everything else that used to exist in this admin** — a manual template-field CRUD screen, a
+manual PDF-background + drag-and-drop field designer, a manual single-certificate issuance form,
+and the PDF Editor Bridge's manual spreadsheet/QR-zip/PDF-zip handoff — **was removed** in that
+cleanup, because PDF Certificates now covers everything they did, directly, without the
+multi-page detour. The sections below titled "Dynamic field architecture", "Certificate
+background & visual layout", "Template lifecycle" and "Single certificate generation" describe
+that **removed** code; they're kept as a historical design record (why the old design looked the
+way it did), each marked with what replaced it. Do not implement against them.
+
 ## Guiding rule
 
-Everything here is driven by `template_fields` rows. No controller, service, or view may branch on
-which template it's dealing with. If a new certificate type needs a code change beyond "create a
-template and its fields," the design has regressed — see `docs/PROJECT_REQUIREMENTS.md`'s
-acceptance test.
+Certificate fields are template-driven — no controller, service, or view may branch on which
+template it's dealing with. **Originally** this meant `template_fields` rows (below); **today**,
+for PDF Certificates, it means the field list derived from the saved PDF Studio project
+(`certificate_templates.editor_schema`, computed by `TemplateProjectService` from the pdfeditor
+bundle's own `fields`/`mapping` — see `docs/PDF_STUDIO_INTEGRATION.md`). Either way: if a new
+certificate type needs a code change beyond "design/upload one," the design has regressed — see
+`docs/PROJECT_REQUIREMENTS.md`'s acceptance test. `template_fields`/`TemplateField` itself is
+**not removed** — `CertificateVerificationService::publicFieldDefinitions()` still falls back to
+a certificate's live template's `template_fields` when its `template_snapshot` is null, which is
+always true for a PDF-Certificates-issued certificate. With no UI left to populate
+`template_fields`, this fallback is a known, accepted limitation: a PDF Certificates-issued
+certificate's public verification page shows only certificate number, recipient and date — no
+extra "public fields" — unless the admin also used the old designer flow on that same template
+before it was removed. Extending `editor_schema` with its own `show_on_verification` concept
+would be the natural real fix; it's out of scope for this cleanup (see `docs/CHANGELOG.md`).
 
-## Dynamic field architecture — implemented Phase 3
+## Dynamic field architecture — implemented Phase 3, REMOVED in the admin workflow cleanup
 
 `template_fields` is the single source of truth for what a certificate template needs. Every
 consumer — the (future) single-certificate form, the (future) Excel header row and import
@@ -108,7 +142,15 @@ circulation); there's no "un-archive" action, but `activate()` works from any st
 archiving is not one-way in practice — flip it back to `active` any time it passes validation
 again.
 
-## Certificate background & visual layout — implemented Phase 4
+## Certificate background & visual layout — implemented Phase 4, REMOVED in the admin workflow cleanup
+
+> **Removed.** The manual background upload + drag-and-drop field designer
+> (`TemplateDesignerController`, `TemplateLayoutService`, `/admin/templates/{template}/designer`)
+> is gone — replaced entirely by the real pdfeditor-based editor (PDF Studio). Kept below as a
+> historical record only. `TemplateBackgroundService` (the file-storage half, with no PDF parsing)
+> is the one piece reused as-is, repurposed to store the "demo certificate" PDF a `PdfCertificates
+> Controller::store()` upload preloads into a brand-new PDF Studio project — see
+> `docs/PDF_STUDIO_INTEGRATION.md`.
 
 An admin uploads the Canva-exported PDF, visually positions every dynamic field plus the two
 system elements on top of it, and the layout survives a reload byte-for-byte. This is the "prove
@@ -305,7 +347,15 @@ No PNG/preview image was generated from this file at any point — the designer 
 directly via PDF.js on every load, confirmed working against this exact file during manual QA (see
 the Phase 4 completion report).
 
-## PDF generation pipeline — implemented Phase 5
+## PDF generation pipeline — implemented Phase 5, REMOVED in the admin workflow cleanup
+
+> **Removed.** This section describes `CertificateIssuanceService`/`CertificatePdfService`'s
+> server-side FPDI/TCPDF rendering pipeline for the old single-certificate issuance flow — deleted
+> entirely, along with the `setasign/fpdi` dependency it alone needed (`tecnickcom/tcpdf` is kept:
+> `QrCodeService::pngBytes()` still uses it for every QR PNG, PDF Studio included). PDF Certificates
+> never renders PDFs server-side at all — the pdfeditor engine fills and exports the PDF
+> client-side (browser WASM), and `ReservationFinalizeService` only stores the resulting bytes.
+> Kept below as a historical record only.
 
 **Resolved**: the real demo Canva certificate (`Demo Certificate.pdf`, PDF 1.4, classic
 non-compressed xref table) imports cleanly with free `setasign/fpdi` — the version-ceiling risk
@@ -402,7 +452,15 @@ Bold is only genuinely embedded for `dejavusans` (`dejavusansb`, TCPDF-bundled);
 silently falls back to the regular Bengali weight (no bold Bengali TTF is embedded) — acceptable
 for Phase 5, noted for anyone revisiting font handling later.
 
-## Template lifecycle
+## Template lifecycle — REMOVED in the admin workflow cleanup
+
+> **Removed.** The draft -> active activation gate below (`TemplateService::activate()`/
+> `activationErrors()`, requiring `template_fields` rows) blocked PDF Studio for no reason — PDF
+> Studio's own generation gate (`DirectBatchService::prepare()`) only ever checked
+> `editor_schema !== null`, never `status`. PDF Certificates has no activation step: a template is
+> usable for generation the moment a project is saved. `TemplateService` now has only
+> `generateUniqueSlug()` and `archive()` (hides a template from the "Saved templates" list; does
+> not touch its batches/certificates). Kept below as a historical record only.
 
 1. **(Phase 3 — built)** Either role (Super Admin or Certificate Manager — see
    `docs/PROJECT_REQUIREMENTS.md` §Roles) creates a template record (name, slug, description) via
@@ -439,7 +497,14 @@ for Phase 5, noted for anyone revisiting font handling later.
    on any template that had ever been used — a worse outcome for no real safety gain, since the
    snapshot already makes historical edits safe.
 
-## Single certificate generation — implemented Phase 5
+## Single certificate generation — implemented Phase 5, REMOVED in the admin workflow cleanup
+
+> **Removed.** `CertificateIssuanceService` and the `CertificateController` actions below
+> (`chooseTemplate`/`create`/`store`) are gone. PDF Certificates' batch flow is the only way to
+> issue a certificate now, even for a single recipient (a "batch" of one row). `CertificateController`
+> still exists, trimmed to the certificate RECORDS browser (`index`/`deleted`/`show`/`download`) —
+> every certificate PDF Certificates issues lands in the same `certificates` table, so that part
+> never changed. Kept below as a historical record only.
 
 `Admin\CertificateController` + `App\Services\Certificates\CertificateIssuanceService`:
 
@@ -937,7 +1002,15 @@ rebuild's explicit instruction not to redesign the workflow.
    now a group row with a live record count, browsable at `/admin/qr-tool/groups`, instead of a
    file on disk.
 
-## Bulk (Excel) generation — a different, still-future feature (Phase 7)
+## Bulk (Excel) generation — a different, still-future feature (Phase 7), SUPERSEDED
+
+> **Superseded, never built as specified below.** None of `ExcelTemplateExportService`,
+> `ExcelImportValidationService` or `UploadBatchRequest` were ever implemented — this section was a
+> forward-looking spec only. Bulk Excel-to-PDF generation is now real, but through PDF Studio's own
+> design (`DirectBatchService::prepare()`/`confirm()`, driven by `editor_schema` rather than
+> `template_fields`, with client-side pdfeditor rendering rather than a server-side pipeline) — see
+> `docs/PDF_STUDIO_INTEGRATION.md`'s "PDF Certificates entry flow". Kept below as a historical
+> record of the original plan only.
 
 Not to be confused with §Excel import (Phase 6, above). That importer migrates **historical** data
 (recipient/role/etc. + an existing codeword) with no PDF ever generated. This still-future feature
@@ -1339,7 +1412,20 @@ MySQL is the only source of truth at all times. Excel files are:
   now-nonsensical per-object `view` check in favor of the same `QrCertificate::create` ability
   every other import/generate action already gates on.
 
-## PDF Editor Bridge — integrating the separate PDF Template Studio editor
+## PDF Editor Bridge — integrating the separate PDF Template Studio editor, REMOVED in the admin workflow cleanup
+
+> **Removed.** The manual file-handoff bridge this section describes
+> (`PdfEditorBridgeController`, `PdfEditorBridgeReservationService`/`PdfEditorBridgeFinalizeService`,
+> `/admin/bulk-generation`, `/admin/batches`) — download a reservation spreadsheet + QR zip, run the
+> separate pdfeditor tool manually, re-upload the generated PDFs one by one — is gone. The direct,
+> embedded integration this section originally rejected (see "Why a live/embedded integration was
+> rejected" just below) was revisited and built anyway once the CSP/no-server constraint turned out
+> to be satisfiable by *serving* the editor from this app's own origin rather than *modifying* it —
+> see "PDF Studio — superseding direct integration" below, now the ONLY way to generate certificates.
+> `CertificateBatchReservation` (the model), `CertificateNumberService` and
+> `VerificationCodewordService` are all still shared, actively used by PDF Studio's
+> `DirectBatchService`/`ReservationFinalizeService` — nothing in this paragraph's removal touched
+> them. Kept below as a historical record of the integration-shape reasoning only.
 
 A second, external repository (`https://github.com/TMAn1An/pdfeditor`, "PDF Template Studio") is a
 local-first, 100%-client-side React/TypeScript SPA: PDF rendering/editing runs entirely in the
@@ -1447,13 +1533,18 @@ here Laravel never renders the PDF. The bridge resolves this by minting first an
 
 ## PDF Studio — superseding direct integration
 
-The manual file-handoff bridge above has been superseded by **PDF Studio**, a direct,
+The manual file-handoff bridge above was first superseded by **PDF Studio**, a direct,
 single-interface integration that embeds the pdfeditor build in the admin and drives it
-programmatically — no manual spreadsheet/QR-zip/PDF download-reupload steps. The bridge's code,
-tables and tests are unchanged and remain available as a manual fallback. See
-`docs/PDF_STUDIO_INTEGRATION.md` for the full design — including "Batch template immutability" and
-"Concurrency — what's a DB guarantee vs. what's not" — and `docs/CHANGELOG.md`'s "PDF Studio" entry
-for what shipped, what was found and fixed via live browser verification, and current limitations.
+programmatically — no manual spreadsheet/QR-zip/PDF download-reupload steps — and then, in the
+admin workflow cleanup, the bridge's code/views/routes were removed outright (no more "manual
+fallback" — see the previous section). **PDF Studio is now the only way to generate certificates**,
+reached directly from `/admin/pdf-certificates` (see "Read this first: the current admin workflow"
+at the top of this document and `docs/PDF_STUDIO_INTEGRATION.md`'s "PDF Certificates entry flow"
+for the unified create-template-and-open-the-editor flow added in that cleanup). See
+`docs/PDF_STUDIO_INTEGRATION.md` for the full design — including "Batch template immutability",
+"Concurrency — what's a DB guarantee vs. what's not", and "PDF Certificates entry flow" — and
+`docs/CHANGELOG.md`'s "PDF Studio" and "Admin workflow cleanup" entries for what shipped, what was
+found and fixed, and current limitations.
 
 ### Verifying concurrency under MySQL/Sail
 

@@ -1,17 +1,24 @@
 # PDF Studio Integration — contract
 
-Supersedes the manual-handoff PDF Editor Bridge (`docs/CERTIFICATE_SYSTEM.md` §PDF Editor Bridge).
-That code is reused, not deleted — the reservation/finalize split and its invariants (no
-`certificates` row without a stored PDF; codeword minted ahead of rendering) carry over unchanged.
-This doc records the direct-integration contract so Phase 2+ have a fixed target.
+Superseded the manual-handoff PDF Editor Bridge (`docs/CERTIFICATE_SYSTEM.md` §PDF Editor
+Bridge). The *concept* — the reservation/finalize split and its invariants (no `certificates` row
+without a stored PDF; codeword minted ahead of rendering) — carried over unchanged into
+`DirectBatchService`/`ReservationFinalizeService` below, but the bridge's own controller,
+services and views (the manual spreadsheet/QR-zip/PDF-zip download-reupload flow) were later
+removed outright in the admin workflow cleanup (see `docs/CHANGELOG.md`) — PDF Studio is now the
+only way to generate certificates, not an alternative to a kept manual fallback. This doc records
+the direct-integration contract, the admin-facing flow built on top of it ("PDF Certificates entry
+flow" below), and what shipped in each round of work.
 
 **Status: implemented and verified live** (full browser run through template design, QR field
 placement, participant upload, generation, QR decode + public verification, resume, and
 re-download; batch template immutability closed and regression-tested; standalone pdfeditor
-export and standalone QR-tool generation+verification independently re-confirmed — see
-`docs/CHANGELOG.md`'s "PDF Studio" entries for the trace and the bugs found and fixed). Final
-pdfeditor commit: `07c689ece0bfa471245f3498574315736d3b027e` on branch
-`claude/laravel-studio-integration`.
+export and standalone QR-tool generation+verification independently re-confirmed; the admin
+workflow cleanup unified the entry point and removed the legacy designer/manual-bridge UI — see
+`docs/CHANGELOG.md`'s "PDF Studio" and "Admin workflow cleanup" entries for the trace and the bugs
+found and fixed). Final pdfeditor commit: see `docs/CHANGELOG.md`'s latest "Admin workflow
+cleanup" entry for the exact SHA/branch — kept out of this contract doc so it never drifts out of
+sync with what's actually deployed.
 
 ## Repos and checkpoint (verified, see audit in conversation history)
 
@@ -54,6 +61,49 @@ pdfeditor commit: `07c689ece0bfa471245f3498574315736d3b027e` on branch
 - **Participant images** (photo fields) and **QR images** are per-batch, never part of the template:
   stored under `storage/app/private/certificate-batches/{batch}/images/` and
   `.../qr/` respectively, referenced only from `certificate_batch_reservations` rows.
+
+## PDF Certificates entry flow
+
+The admin-facing product built on top of everything else in this document (added in the admin
+workflow cleanup — see `docs/CHANGELOG.md`). One connected flow, no legacy detour:
+
+1. **`/admin/pdf-certificates`** (nav: "PDF Certificates" -> "Templates & Batches") —
+   `PdfCertificatesController::index()`. A fresh database shows an empty state with a "New
+   template" action; otherwise a "Saved templates" list (archived templates hidden, not deleted).
+2. **New template** (`.../create` -> `store()`) — name + the demo certificate PDF, **in one
+   form**. `StoreCertificateTemplateRequest` validates both; `TemplateBackgroundService` (reused
+   from the old, removed designer flow — same storage mechanics, new caller) stores the PDF.
+   `store()` redirects straight to `pdf-studio.show`, never to a template-manager page.
+3. **The editor** (`PdfStudioController::show()`) — for a template with no saved project yet, the
+   just-uploaded PDF is preloaded automatically as a fresh project: `show()` computes
+   `initialPdfUrl` (pointing at the new `GET .../templates/{template}/source-pdf` endpoint) only
+   while `editor_project_path` is still null, and the pdfeditor adapter's Design-mode auto-load
+   effect (`StudioApp.tsx`) fetches it, calls the same `preparePdf()`/`newProjectFor()` pair the
+   editor's own "Choose PDF…" button uses, and loads it — no re-selecting the file inside the
+   editor's Welcome screen. The admin places text/image fields and the QR field, then "Save to
+   server" (unchanged — see "Template/project format" above). Once a project exists,
+   `initialPdfUrl` is never advertised again; the normal `fetchProject()` load takes over.
+4. **Upload participants** (`.../studio/{template}/prepare`, linked from the editor's toolbar and
+   from the batch-history page below) — the existing Excel-instructions/sample-download/
+   preview/confirm page (`admin.pdf-studio.prepare`, unchanged by this cleanup — it already showed
+   expected columns, required/optional, a downloadable sample workbook, and the "codewords/QR are
+   automatic" note before this cleanup started). Confirming lands on `pdf-studio.show-batch`
+   (Generate mode).
+5. **Batch history** (`.../pdf-certificates/{template}/batches` ->
+   `PdfCertificatesController::batches()`) — the piece that was missing before this cleanup: a
+   list of a template's batches with "Resume / Review" (back into Generate mode) and "Download
+   ZIP" links, so an admin can get back to an in-progress or completed batch without having
+   bookmarked its URL or remembered its id. Built entirely on existing endpoints (no new
+   generation/download logic) — `CertificateBatch::$batches()` relation,
+   `pdf-studio.show-batch`, and the existing `batches.download` ZIP endpoint.
+
+What this replaced: creating a template used to land on a manual name/slug/description page,
+which separately linked to a manual background-upload + drag-and-drop field designer and a
+manual field-CRUD screen, required a "draft -> active" activation step unrelated to PDF Studio's
+own readiness check, and the only way to reach PDF Studio at all was a button back on the
+template *list* page — never the template's own edit page. All of that (TemplateController,
+TemplateDesignerController, TemplateFieldController, the draft/active activation gate) was
+removed; see `docs/CHANGELOG.md`'s "Admin workflow cleanup" entry for the full before/after.
 
 ## Batch template immutability
 

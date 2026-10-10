@@ -1212,3 +1212,133 @@ write-up; summary here:
   `config/pdf-studio.php` repinned, the stale `067dfa7c537a` build removed.
 - Tests: `tests/Feature/Admin/PdfStudioTest.php` (12 tests, 2 new) plus the full existing suite —
   206/206 passing (sqlite; see the MySQL-specific limitation above).
+
+## Admin workflow cleanup: one unified PDF Certificates entry, legacy removed (2026-10-10)
+
+The PDF Studio integration (above) existed but was hard to reach: creating a template landed on
+the old manual name/slug page, which separately linked to a manual background-upload +
+drag-and-drop field designer and a manual field-CRUD screen, required an unrelated draft->active
+activation step, and the only link to PDF Studio itself was a button back on the template *list*
+page — never the template's own edit page. The old manual single-certificate issuance flow and the
+PDF Editor Bridge's manual spreadsheet/QR-zip/PDF-zip handoff also still existed in parallel. This
+pass unifies the entry point and removes everything the unified flow supersedes. See
+`docs/PDF_STUDIO_INTEGRATION.md`'s "PDF Certificates entry flow" for the full design and
+`docs/CERTIFICATE_SYSTEM.md`'s "Read this first" section for the current/removed map.
+
+**New unified flow** (`PdfCertificatesController`, new views under `resources/views/admin/
+pdf-certificates/`):
+- `/admin/pdf-certificates` — "New template" / "Saved templates", with a real empty state on a
+  fresh database.
+- New template = name + the demo certificate PDF, **one form** (`StoreCertificateTemplateRequest`
+  now validates both). Submitting creates the template, stores the PDF
+  (`TemplateBackgroundService`, reused from the removed designer flow), and redirects **straight
+  into the real pdfeditor-based editor** — never a legacy template-manager page.
+- The editor (`PdfStudioController::show()`) preloads that uploaded PDF automatically into a fresh
+  project for a template with no saved design yet (`initialPdfUrl` config key, new
+  `GET .../templates/{template}/source-pdf` endpoint, a new Design-mode auto-load effect in the
+  pdfeditor adapter's `StudioApp.tsx` mirroring the existing Generate-mode one). Saving a project
+  clears this preload permanently for that template.
+- New `/admin/pdf-certificates/{template}/batches` batch-history list — the piece that was
+  missing: "Resume / Review" and "Download ZIP" links for every past batch, built entirely on the
+  existing batch endpoints (no new generation/download logic).
+- The Excel-instructions/sample-download/preview/confirm page (`admin.pdf-studio.prepare`) is
+  unchanged — it already covered the "show expected columns, required/optional, sample workbook,
+  codewords/QR are automatic" requirements.
+- Nav/dashboard: "PDF Certificates" and "QR Generator" are now top-level sections (dashboard also
+  links both directly); the old "Advanced / Future" section (Certificate Templates / Advanced
+  Certificates / Bulk Generation / Batches) is gone.
+- Old entry URLs with a clear replacement 301-style redirect rather than 404: `/admin/templates` ->
+  PDF Certificates index, `/admin/templates/create` -> the new create form, `/admin/templates/
+  {template}/edit` -> the real editor, `/admin/certificates/issue` -> PDF Certificates index. Every
+  removed **mutation** endpoint (field CRUD, designer save, background upload, activate/archive-old,
+  single-cert store, bulk-generation/batches-finalize) is gone outright, not redirected — regression
+  tested in `PdfCertificatesTest::test_removed_mutation_endpoints_are_gone`.
+
+**Removed** (controllers, services, requests, views, tests — confirmed dead by reference search
+before deletion, not just by name):
+- `TemplateController`, `TemplateDesignerController`, `TemplateFieldController` and their views
+  (`admin/templates/{create,edit,index,designer,fields/*}.blade.php`) — the manual
+  background-designer + field-CRUD screens.
+- `TemplateFieldService`, `TemplateLayoutService`, `TemplateFieldRules` — only used by the above.
+- `TemplateService::activate()`/`activationErrors()` — the draft->active gate, which checked
+  `template_fields` and had no relationship to PDF Studio's own readiness check
+  (`editor_schema !== null`). `generateUniqueSlug()`/`archive()` remain.
+- `CertificateController::chooseTemplate()`/`create()`/`store()` and their views
+  (`admin/certificates/{choose-template,issue}.blade.php`) — the manual single-certificate
+  issuance form. `CertificateController` itself remains, trimmed to the records browser
+  (`index`/`deleted`/`show`/`download`) — every certificate PDF Certificates issues still lands in
+  the same `certificates` table.
+- `CertificateIssuanceService` — only caller was the above.
+- `PdfEditorBridgeController`, `PdfEditorBridgeReservationService`,
+  `PdfEditorBridgeFinalizeService`, and `admin/pdf-editor/{create,index,show}.blade.php` — the
+  manual spreadsheet/QR-zip/PDF-zip handoff. `CertificateBatchReservation`,
+  `CertificateNumberService`, `VerificationCodewordService` (used by both the bridge and PDF
+  Studio) are untouched — confirmed by reference search before deciding what to keep.
+- `App\Services\Certificates\Pdf\{CertificatePdfService,CertificateFontResolver,
+  CertificatePdfRenderResult,PdfCoordinateConverter,PdfPageBoxReader}` — the old server-side
+  FPDI/TCPDF single-certificate rendering pipeline, dead once `CertificateIssuanceService` and
+  `PdfEditorBridgeFinalizeService` were gone. `PdfPageBox` (a tiny value object, no FPDI
+  dependency) is **kept** — `CertificateSnapshotService::layoutSnapshot()` still uses it, and that
+  service's output is still read by `CertificateVerificationService`'s snapshot-first fallback for
+  any pre-existing certificate (verified live by `PublicVerificationTest::
+  test_existing_phase5_certificate_verifies_via_snapshot`, which still passes).
+  `QrCodeService::drawOnPdf()` (the only other FPDI caller, `write2DBarcode()` into an open PDF)
+  is also removed as dead code; `pngBytes()` (standalone QR PNGs, used by everything) is untouched.
+- `setasign/fpdi` removed from `composer.json`/`composer.lock` via `composer remove` (had no
+  caller left at all). `tecnickcom/tcpdf` **kept** — `QrCodeService::pngBytes()` still needs it for
+  every QR PNG, PDF Studio included.
+- `CertificateTemplatePolicy::manageLayout()` — only guarded the removed designer's write actions.
+- Tests for removed flows deleted outright (`TemplateManagementTest`, `TemplateDesignerTest`,
+  `PdfEditorBridgeTest`, `CertificateIssuanceTest`); the two still-meaningful cases from
+  `CertificateIssuanceTest` (listing/search, detail/download authorization) moved into a new
+  `CertificateRecordsTest` built against the trimmed `CertificateController`, not the removed
+  issuance pipeline.
+
+**Deliberately kept, not schema-removed**: `certificate_templates.source_pdf_path`/
+`original_filename`/`file_mime`/`file_size` (repurposed for the new "demo PDF" upload — same
+columns, new meaning), `certificate_templates.page_width`/`height`/`certificate_number_layout`/
+`qr_code_layout` (now write-only-dead — nothing sets them anymore since the designer is gone — kept
+since no reader depends on removing them and schema removal wasn't warranted), `template_fields`
+table/model/relation (kept — see `docs/CERTIFICATE_SYSTEM.md`'s "Guiding rule" for the documented
+public-verification-fallback limitation this implies for new PDF-Certificates-issued certificates).
+
+**Verified live** (Playwright against a disposable SQLite DB + `php artisan serve`, not just HTTP
+200 — see the trace):
+- Dashboard -> "Open PDF Certificates" link -> empty state with a "New template" action on a fresh
+  database.
+- Created a template (name + a real demo certificate PDF) -> landed directly in the real pdfeditor
+  editor with that PDF already loaded (no file re-selection, no legacy page in between).
+- Drew a QR image field and a recipient-name text field, mapped the text field to a column via the
+  Data step, saved -> reopened from the PDF Certificates list ("Design saved" badge) -> editor
+  reloads the real saved project.
+- "Upload participants" showed the expected column, the "codewords/QR are automatic" note, and a
+  working sample-workbook download, before any participant upload.
+- Uploaded a real 3-row spreadsheet, previewed (0 errors), confirmed, generated — all 3 PDFs
+  contain the correct per-person name; each PDF's QR was rendered into a real pixel image,
+  decoded (zxing-cpp) to a unique `/certificate/verify/{codeword}` URL, and each URL resolved on
+  the live public verification page to the matching recipient name ("Certificate Verified").
+- Downloaded the batch ZIP twice — byte-identical (sha256) both times, proving re-download returns
+  the stored PDFs without regenerating or reissuing.
+- Batch-pinned immutability still holds for the new flow too: reopening Generate mode showed
+  "Loaded … (as saved for this batch)".
+- Standalone simple QR generator (`/admin/qr-tool/generate`) re-confirmed working end-to-end,
+  independent of PDF Certificates: generated a record, decoded its QR, resolved on the public page.
+- Grepped the full `app/`/`resources/` tree for every removed route name/controller/service —
+  zero remaining references (beyond intentional historical doc mentions).
+- **Found and fixed as part of driving this live** (not a change to behavior, a fix to my own test
+  script): `GeneratePanel`'s `load()` shows the manifest table (and un-disables "Generate
+  remaining") slightly before its QR/photo image-fetch loop finishes adding them to the workspace —
+  clicking "Generate remaining" in that narrow window renders certificates with blank QR fields
+  (`image-missing` warning, silently non-fatal). A real admin reading the screen before clicking
+  doesn't hit this in practice (confirmed: adding a short, realistic wait before clicking
+  eliminated it across repeated runs), and `GeneratePanel.tsx` is pre-existing PDF Studio code this
+  cleanup was not scoped to touch — documented here as a known, pre-existing, unfixed timing gap
+  rather than silently worked around.
+- Tests: `tests/Feature/Admin/PdfCertificatesTest.php` (10 new), `tests/Feature/Admin/
+  CertificateRecordsTest.php` (3, carried over from the removed `CertificateIssuanceTest`), plus
+  the full existing suite — 178/178 passing (sqlite; MySQL-specific concurrency behavior is
+  unchanged by this pass and was already documented separately as untested here).
+- pdfeditor commit: `53c424b2b4f007bc17423e61dc853ea6ebb46f25`
+  (`claude/laravel-studio-integration`) — adds `StudioConfig.initialPdfUrl`/`templateName` and the
+  Design-mode auto-load effect; `public/vendor/pdf-editor/53c424b2b4f0/` synced,
+  `config/pdf-studio.php` repinned, the stale `07c689ece0bf` build removed.

@@ -1,1 +1,0 @@
-import{d as e,g as t,h as n,t as r}from"./app-Bg7IHCtw.js";var i=t(),a=n(),o=e();(0,a.createRoot)(document.getElementById(`root`)).render((0,o.jsx)(i.StrictMode,{children:(0,o.jsx)(r,{})}));
