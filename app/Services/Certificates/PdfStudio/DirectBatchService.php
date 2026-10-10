@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\Certificates\CertificateNumberService;
 use App\Services\Certificates\Import\ExcelFileReader;
 use App\Services\Certificates\VerificationCodewordService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -154,16 +155,31 @@ class DirectBatchService
         $headers = $sheet['headers'];
         $rows = $sheet['rows'];
 
-        $batch = DB::transaction(fn () => CertificateBatch::create([
-            'certificate_template_id' => $template->id,
-            'source' => 'pdf_studio',
-            'name' => ($schema['project_name'] ?? $template->name).' — '.now()->toDateTimeString(),
-            'status' => CertificateBatchStatus::Processing,
-            'total_rows' => count($rows),
-            'created_by' => $admin->id,
-            'idempotency_key' => $idempotencyKey,
-            'editor_schema_version' => $template->editor_schema_version,
-        ]));
+        // editor_project_path is pinned onto the batch, not just its schema
+        // version: TemplateProjectService::save() keeps every prior bundle
+        // file around precisely so this path stays valid even after the
+        // template is later re-saved. See
+        // docs/PDF_STUDIO_INTEGRATION.md's "Batch template immutability".
+        try {
+            $batch = DB::transaction(fn () => CertificateBatch::create([
+                'certificate_template_id' => $template->id,
+                'source' => 'pdf_studio',
+                'name' => ($schema['project_name'] ?? $template->name).' — '.now()->toDateTimeString(),
+                'status' => CertificateBatchStatus::Processing,
+                'total_rows' => count($rows),
+                'created_by' => $admin->id,
+                'idempotency_key' => $idempotencyKey,
+                'editor_schema_version' => $template->editor_schema_version,
+                'editor_project_path' => $template->editor_project_path,
+            ]));
+        } catch (UniqueConstraintViolationException) {
+            // Lost a race against a concurrent confirm() using the same
+            // idempotency key: the other request's row now exists under the
+            // unique constraint on certificate_batches.idempotency_key — the
+            // DB constraint is the actual guarantee here, this catch only
+            // makes the loser return the winner's batch instead of a 500.
+            return CertificateBatch::where('idempotency_key', $idempotencyKey)->firstOrFail();
+        }
 
         $photosDir = "{$dir}/photos";
         $recipientColumn = null;

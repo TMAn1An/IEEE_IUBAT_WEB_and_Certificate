@@ -52,6 +52,30 @@ class PdfStudioApiController extends Controller
         ]);
     }
 
+    /**
+     * The batch-scoped counterpart to getProject(): serves the project
+     * bundle PINNED to this batch at confirm time
+     * (CertificateBatch::$editor_project_path), not the template's current
+     * one — this is what the Studio adapter fetches in Generate mode so a
+     * template re-save after a batch was created never changes what that
+     * batch's remaining rows render. Falls back to the template's current
+     * project only for legacy batches created before this column existed
+     * (editor_project_path null). See docs/PDF_STUDIO_INTEGRATION.md's
+     * "Batch template immutability".
+     */
+    public function getBatchProject(CertificateBatch $batch): StreamedResponse
+    {
+        $this->authorize('create', Certificate::class);
+
+        $path = $batch->editor_project_path ?? $batch->template->editor_project_path;
+
+        abort_unless($path !== null && Storage::disk('local')->exists($path), 404);
+
+        return Storage::disk('local')->response($path, 'project.pdftemplate', [
+            'Content-Type' => 'application/zip',
+        ]);
+    }
+
     public function saveProject(SaveStudioProjectRequest $request, CertificateTemplate $template): JsonResponse
     {
         $template = $this->projectService->save(

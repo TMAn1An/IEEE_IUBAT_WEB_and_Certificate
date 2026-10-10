@@ -33,17 +33,17 @@ class TemplateProjectService
             basename($path)
         );
 
-        $oldPath = $template->editor_project_path;
-
+        // The previous bundle at $template->editor_project_path is deliberately
+        // NOT deleted here: any certificate_batches row created against the
+        // template before this save pins that old path in its own
+        // editor_project_path column (see DirectBatchService::confirm()) and
+        // must keep rendering against it. See
+        // docs/PDF_STUDIO_INTEGRATION.md's "Batch template immutability".
         $template->update([
             'editor_project_path' => $path,
             'editor_schema' => $schema,
             'editor_schema_version' => $template->editor_schema_version + 1,
         ]);
-
-        if ($oldPath !== null && $oldPath !== $path) {
-            Storage::disk('local')->delete($oldPath);
-        }
 
         return $template->fresh();
     }
@@ -56,6 +56,21 @@ class TemplateProjectService
         }
 
         return Storage::disk('local')->path($template->editor_project_path);
+    }
+
+    /**
+     * Resolves the immutable project bundle a given stored path points at.
+     * Used for batch-scoped reads (CertificateBatch::$editor_project_path)
+     * as well as the template's current path, so both go through the same
+     * existence check.
+     */
+    public function bundleAbsolutePathFor(string $relativePath): string
+    {
+        if (! Storage::disk('local')->exists($relativePath)) {
+            throw new RuntimeException('The saved PDF Studio project bundle is missing from storage.');
+        }
+
+        return Storage::disk('local')->path($relativePath);
     }
 
     /** @return array<string, mixed> */

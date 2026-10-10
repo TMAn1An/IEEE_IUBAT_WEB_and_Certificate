@@ -3,6 +3,7 @@
 namespace Tests\Feature\Admin;
 
 use App\Enums\CertificateBatchReservationStatus;
+use App\Enums\CertificateBatchStatus;
 use App\Enums\CertificateTemplateStatus;
 use App\Models\Certificate;
 use App\Models\CertificateBatch;
@@ -42,13 +43,13 @@ class PdfStudioTest extends TestCase
     }
 
     /** A minimal, valid .pdftemplate bundle: project.json only (no PDF/fonts needed — TemplateProjectService never parses the PDF). */
-    private function projectBundle(): UploadedFile
+    private function projectBundle(string $name = 'Audit Certificate'): UploadedFile
     {
         $project = [
             'format' => 'pdf-template-studio/project',
             'version' => 2,
             'id' => 'proj_1',
-            'name' => 'Audit Certificate',
+            'name' => $name,
             'createdAt' => now()->toIso8601String(),
             'updatedAt' => now()->toIso8601String(),
             'pdf' => null,
@@ -384,5 +385,131 @@ class PdfStudioTest extends TestCase
         // The already-confirmed batch still records the version it was created against.
         $batch->refresh();
         $this->assertSame(1, $batch->editor_schema_version);
+    }
+
+    private function projectNameFromBundleBytes(string $zipBytes): string
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'readback').'.zip';
+        file_put_contents($tmp, $zipBytes);
+        $zip = new ZipArchive;
+        $zip->open($tmp);
+        $json = json_decode($zip->getFromName('project.json'), true);
+        $zip->close();
+        unlink($tmp);
+
+        return $json['name'];
+    }
+
+    public function test_batch_template_immutability_old_batch_keeps_old_design_new_batch_gets_new_design(): void
+    {
+        // Reproduces the exact scenario this column/endpoint exists for
+        // (docs/PDF_STUDIO_INTEGRATION.md "Batch template immutability"):
+        // start a 3-row batch, finalize one row, edit+save the template,
+        // resume the OLD batch, and confirm it still serves the ORIGINAL
+        // bundle — while a NEW batch confirmed after the edit serves the
+        // EDITED one. Goes further than asserting editor_schema_version:
+        // it reads back the actual bundle bytes a resumed batch would be
+        // rendered from.
+        $admin = User::factory()->create();
+        $template = $this->draftTemplate($admin);
+
+        $this->actingAs($admin)->call('PUT', route('admin.pdf-studio.api.templates.project.store', $template), [
+            'qr_field_id' => 'fld_qr', 'recipient_field_id' => 'fld_name',
+        ], [], ['project' => $this->projectBundle('Original Design')]);
+
+        $prepare = $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.prepare', $template), [
+            'participants' => $this->excelUpload(['name', 'paper_title'], [
+                ['Alice Doe', 'A Study'],
+                ['Bob Roe', 'Another Study'],
+                ['Carol Poe', 'A Third Study'],
+            ]),
+        ]);
+        $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.confirm', $template), [
+            'token' => $prepare->json('token'), 'idempotency_key' => 'immutability-old-batch',
+        ]);
+        $oldBatch = CertificateBatch::first();
+        $this->assertNotNull($oldBatch->editor_project_path);
+
+        // Finalize one row of the old batch before the template changes.
+        $reservation = $oldBatch->reservations()->first();
+        $pdfPath = tempnam(sys_get_temp_dir(), 'cert').'.pdf';
+        file_put_contents($pdfPath, "%PDF-1.4\nfake\n%%EOF");
+        $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.reservations.finalize', $reservation), [
+            'pdf' => new UploadedFile($pdfPath, 'c.pdf', 'application/pdf', null, true),
+        ])->assertOk();
+
+        // Edit and save the original template with a different design.
+        $this->actingAs($admin)->call('PUT', route('admin.pdf-studio.api.templates.project.store', $template), [
+            'qr_field_id' => 'fld_qr', 'recipient_field_id' => 'fld_name',
+        ], [], ['project' => $this->projectBundle('Edited Design')]);
+        $template->refresh();
+        $this->assertSame(2, $template->editor_schema_version);
+
+        // Resuming the OLD batch (its remaining, un-finalized rows) must
+        // still serve the ORIGINAL bundle, not the template's current one.
+        $oldBatchProject = $this->actingAs($admin)->get(route('admin.pdf-studio.api.batches.project', $oldBatch));
+        $oldBatchProject->assertOk();
+        $this->assertSame('Original Design', $this->projectNameFromBundleBytes($oldBatchProject->streamedContent()));
+
+        // A NEW batch confirmed after the edit must serve the EDITED bundle.
+        $prepare2 = $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.prepare', $template), [
+            'participants' => $this->excelUpload(['name', 'paper_title'], [['Dave Roe', 'A Fourth Study']]),
+        ]);
+        $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.confirm', $template), [
+            'token' => $prepare2->json('token'), 'idempotency_key' => 'immutability-new-batch',
+        ]);
+        $newBatch = CertificateBatch::where('id', '!=', $oldBatch->id)->first();
+        $this->assertSame(2, $newBatch->editor_schema_version);
+
+        $newBatchProject = $this->actingAs($admin)->get(route('admin.pdf-studio.api.batches.project', $newBatch));
+        $newBatchProject->assertOk();
+        $this->assertSame('Edited Design', $this->projectNameFromBundleBytes($newBatchProject->streamedContent()));
+
+        // The template's own (current) project is the edited one, confirming
+        // the old batch's bundle really is a separate, pinned file — not
+        // merely a cache of the template's state at an earlier point in time.
+        $templateProject = $this->actingAs($admin)->get(route('admin.pdf-studio.api.templates.project.show', $template));
+        $this->assertSame('Edited Design', $this->projectNameFromBundleBytes($templateProject->streamedContent()));
+    }
+
+    public function test_confirm_survives_a_lost_race_on_the_same_idempotency_key(): void
+    {
+        // DirectBatchService::confirm() checks `where('idempotency_key', ...)->first()`
+        // then creates — a classic check-then-insert race. Two concurrent
+        // requests can both see null and both attempt to create; the DB's
+        // UNIQUE constraint on idempotency_key is the real guarantee, and
+        // the loser must return the winner's batch instead of a 500. This
+        // simulates the race deterministically: insert the "winner" row
+        // directly between the check and the create.
+        $admin = User::factory()->create();
+        $template = $this->draftTemplate($admin);
+        $this->actingAs($admin)->call('PUT', route('admin.pdf-studio.api.templates.project.store', $template), [
+            'qr_field_id' => 'fld_qr', 'recipient_field_id' => 'fld_name',
+        ], [], ['project' => $this->projectBundle()]);
+        $prepare = $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.prepare', $template), [
+            'participants' => $this->excelUpload(['name', 'paper_title'], [['Alice Doe', 'A Study']]),
+        ]);
+        $token = $prepare->json('token');
+        $key = 'race-key-1';
+
+        $winner = CertificateBatch::create([
+            'certificate_template_id' => $template->id,
+            'source' => 'pdf_studio',
+            'name' => 'Winner (simulated concurrent request)',
+            'status' => CertificateBatchStatus::Processing,
+            'total_rows' => 1,
+            'created_by' => $admin->id,
+            'idempotency_key' => $key,
+            'editor_schema_version' => $template->editor_schema_version,
+            'editor_project_path' => $template->editor_project_path,
+        ]);
+
+        $loserResponse = $this->actingAs($admin)->postJson(route('admin.pdf-studio.api.templates.batches.confirm', $template), [
+            'token' => $token, 'idempotency_key' => $key,
+        ]);
+
+        $loserResponse->assertOk();
+        $this->assertSame($winner->id, $loserResponse->json('batch_id'));
+        $this->assertSame(1, CertificateBatch::where('idempotency_key', $key)->count());
     }
 }

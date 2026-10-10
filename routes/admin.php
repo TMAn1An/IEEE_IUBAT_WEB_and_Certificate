@@ -222,6 +222,7 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::post('/templates/{template}/batches', [PdfStudioApiController::class, 'prepareBatch'])->name('templates.batches.prepare');
         Route::post('/templates/{template}/batches/confirm', [PdfStudioApiController::class, 'confirmBatch'])->name('templates.batches.confirm');
 
+        Route::get('/batches/{batch}/project', [PdfStudioApiController::class, 'getBatchProject'])->name('batches.project');
         Route::get('/batches/{batch}/manifest', [PdfStudioApiController::class, 'manifest'])->name('batches.manifest');
         Route::get('/batches/{batch}/status', [PdfStudioApiController::class, 'status'])->name('batches.status');
         Route::get('/batches/{batch}/download.zip', [PdfStudioApiController::class, 'downloadZip'])->name('batches.download');

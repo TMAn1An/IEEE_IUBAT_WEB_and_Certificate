@@ -23,6 +23,7 @@ class CertificateBatch extends Model
         'created_by',
         'idempotency_key',
         'editor_schema_version',
+        'editor_project_path',
     ];
 
     protected function casts(): array
