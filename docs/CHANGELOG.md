@@ -1161,3 +1161,54 @@ in `docs/PDF_STUDIO_INTEGRATION.md`. Summary:
   retry a single failed row without reopening the batch.
 - Tests: `tests/Feature/Admin/PdfStudioTest.php` (10 tests) plus the full existing suite —
   204/204 passing.
+
+## PDF Studio: closing four verification gaps (2026-10-10)
+
+A follow-up review of the integration above found one real bug and one real (if
+cryptographically negligible) race, and verified two things the prior session's report had only
+asserted rather than demonstrated. See `docs/PDF_STUDIO_INTEGRATION.md`'s "Batch template
+immutability" and "Concurrency — what's a DB guarantee vs. what's not" sections for the full
+write-up; summary here:
+
+- **Found and fixed — batch template immutability was broken.** `TemplateProjectService::save()`
+  deleted the template's previous `.pdftemplate` file on every re-save, and
+  `certificate_batches` only recorded an integer `editor_schema_version`, no pointer to the
+  actual bundle bytes a batch was created against. Confirmed by code reading, then by the exact
+  scenario the review asked for: start a 3-row batch, finalize one row, edit+save the template
+  with a different design, resume the old batch — its remaining rows would have silently started
+  rendering the NEW design. Fixed: old project files are no longer deleted;
+  `certificate_batches.editor_project_path` (new migration) pins the exact file a batch was
+  confirmed against; a new `GET /admin/api/pdf-studio/batches/{batch}/project` endpoint serves it;
+  the pdfeditor adapter's Generate mode now fetches this batch-scoped endpoint instead of the
+  template-scoped one. Regression-tested end-to-end (including reading back the actual bundle
+  bytes, not just a version number) by
+  `test_batch_template_immutability_old_batch_keeps_old_design_new_batch_gets_new_design`.
+- **Found and fixed — a real (if astronomically unlikely) idempotency race.**
+  `DirectBatchService::confirm()`'s "check idempotency_key then create" was a genuine
+  check-then-insert race across two concurrent requests. Fixed by catching
+  `UniqueConstraintViolationException` on the create and returning the winner's batch to the
+  loser, backed by the table's existing unique constraint. Verified deterministically (not via
+  real threading) by `test_confirm_survives_a_lost_race_on_the_same_idempotency_key`.
+- **Reviewed, not changed — codeword cross-table uniqueness and reservation finalize locking.**
+  `uniqueCodeword()`'s "check certificates + qr_certificates + reservations" is a theoretical
+  cross-table race, but codewords are 256-bit CSPRNG values, making a real collision
+  cryptographically negligible — documented as an accepted tradeoff rather than "fixed" with
+  machinery disproportionate to the actual risk.
+  `ReservationFinalizeService::finalize()`'s `DB::transaction()` + `lockForUpdate()` pattern is
+  the correct MySQL/InnoDB row-lock approach and was confirmed correct by code review — this
+  sandbox has no MySQL/Docker available, so it could not be exercised under genuine concurrent
+  connections here; exact commands to verify it for real on the existing local Sail environment
+  are in `docs/CERTIFICATE_SYSTEM.md`'s "Verifying concurrency under MySQL/Sail".
+- **Verified — standalone functionality, beyond HTTP 200.** Drove the real, unmodified
+  `index.html` (not `studio.html`) through Playwright: loaded the built-in sample, exported one
+  row's PDF via the per-row "Download" button, and confirmed a valid, correctly-filled 1-page PDF
+  (`%PDF-` header, extractable text matching the sample data) with no console/page errors.
+  Separately, filled out and submitted the standalone simple QR tool
+  (`/admin/qr-tool/generate`, independent of PDF Studio and of Form/Page Builder), decoded the
+  resulting QR PNG with zxing-cpp, and confirmed the decoded URL resolves on the public
+  verification page as "Certificate Verified".
+- pdfeditor commit updated to `07c689ece0bfa471245f3498574315736d3b027e`
+  (`claude/laravel-studio-integration`); `public/vendor/pdf-editor/07c689ece0bf/` synced,
+  `config/pdf-studio.php` repinned, the stale `067dfa7c537a` build removed.
+- Tests: `tests/Feature/Admin/PdfStudioTest.php` (12 tests, 2 new) plus the full existing suite —
+  206/206 passing (sqlite; see the MySQL-specific limitation above).

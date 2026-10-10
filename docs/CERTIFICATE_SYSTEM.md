@@ -1451,5 +1451,44 @@ The manual file-handoff bridge above has been superseded by **PDF Studio**, a di
 single-interface integration that embeds the pdfeditor build in the admin and drives it
 programmatically — no manual spreadsheet/QR-zip/PDF download-reupload steps. The bridge's code,
 tables and tests are unchanged and remain available as a manual fallback. See
-`docs/PDF_STUDIO_INTEGRATION.md` for the full design and `docs/CHANGELOG.md`'s "PDF Studio" entry
+`docs/PDF_STUDIO_INTEGRATION.md` for the full design — including "Batch template immutability" and
+"Concurrency — what's a DB guarantee vs. what's not" — and `docs/CHANGELOG.md`'s "PDF Studio" entry
 for what shipped, what was found and fixed via live browser verification, and current limitations.
+
+### Verifying concurrency under MySQL/Sail
+
+The automated test suite in this sandbox runs against SQLite (no MySQL/Docker available here), which
+proves the application-level logic is wired up correctly but **cannot prove MySQL/InnoDB's row-level
+locking actually serializes two genuinely concurrent requests** — SQLite's locking is coarser
+(database-file-level), not per-row. To verify the real guarantee on the existing local Sail MySQL
+environment, run the following from a Windows PowerShell prompt (see
+`docs/DEPLOYMENT_CPANEL.md`/README for the base Sail setup — this assumes `vendor/bin/sail` already
+exists and `.env` is already configured for the `mysql`/`laravel.test` services):
+
+```powershell
+# 1. Bring the stack up if it isn't already (does not touch volumes/.env/APP_KEY).
+./vendor/bin/sail up -d
+
+# 2. Concurrent finalize of the SAME reservation — open TWO separate terminals and
+#    run both of these within the same second (adjust the reservation id to one you
+#    actually have pending):
+./vendor/bin/sail artisan tinker --execute="
+  app(App\Services\Certificates\PdfStudio\ReservationFinalizeService::class)->finalize(
+    App\Models\CertificateBatchReservation::find(1),
+    file_get_contents('storage/app/testing/sample.pdf'),
+    App\Models\User::first()
+  );
+"
+# Expected: exactly one of the two prints 'finalized', the other prints
+# 'already_finalized' or 'conflict' -- never two 'finalized' results, and
+# Certificate::where('certificate_batch_reservation_id', 1)->count() must stay 1.
+
+# 3. Concurrent confirm of the SAME idempotency key -- open two terminals, same idea,
+#    both calling DirectBatchService::confirm() with an identical $idempotencyKey
+#    against a token from the SAME prepare() call. Expected: both calls return the
+#    same batch_id, and CertificateBatch::where('idempotency_key', $key)->count() is 1.
+```
+
+Report back which of the two actually interleaved (check `SHOW ENGINE INNODB STATUS` or the
+slow log if timing is unclear) rather than assuming a clean pass means real concurrency was
+exercised — two sequential calls a few milliseconds apart will also pass trivially.
