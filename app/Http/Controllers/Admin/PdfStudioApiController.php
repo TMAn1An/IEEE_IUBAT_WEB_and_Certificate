@@ -76,6 +76,27 @@ class PdfStudioApiController extends Controller
         ]);
     }
 
+    /**
+     * The "demo certificate" PDF uploaded at template-creation time
+     * (PdfCertificatesController::store(), via TemplateBackgroundService) —
+     * served here only so the Studio adapter can preload it as a brand-new
+     * project's starting PDF (StudioApp.tsx's initial-PDF auto-load
+     * effect). Once a project has been saved, PdfStudioController::show()
+     * stops advertising this URL at all — see that method's docblock.
+     */
+    public function sourcePdf(CertificateTemplate $template): StreamedResponse
+    {
+        $this->authorize('create', Certificate::class);
+
+        abort_unless($template->hasBackground(), 404);
+
+        return Storage::disk('local')->response(
+            $template->source_pdf_path,
+            $template->original_filename ?: 'certificate-template.pdf',
+            ['Content-Type' => 'application/pdf']
+        );
+    }
+
     public function saveProject(SaveStudioProjectRequest $request, CertificateTemplate $template): JsonResponse
     {
         $template = $this->projectService->save(

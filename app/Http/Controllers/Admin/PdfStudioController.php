@@ -41,11 +41,23 @@ class PdfStudioController extends Controller
 
         $html = File::get($shellPath);
 
+        // Preload the demo PDF uploaded at template-creation time as a
+        // fresh project's starting point — only while no project has been
+        // saved yet. Once editor_project_path is set, the adapter's normal
+        // fetchProject() load takes over and this stays null forever (the
+        // bundle's own PDF bytes are what matters from then on, not the
+        // originally-uploaded file). See docs/PDF_STUDIO_INTEGRATION.md.
+        $initialPdfUrl = (! $template->hasEditorProject() && $template->hasBackground())
+            ? route('admin.pdf-studio.api.templates.source-pdf', $template)
+            : null;
+
         $config = json_encode([
             'apiBase' => url('/admin/api/pdf-studio'),
             'templateId' => $template->id,
+            'templateName' => $template->name,
             'csrfToken' => csrf_token(),
             'batchId' => $batch?->id,
+            'initialPdfUrl' => $initialPdfUrl,
         ], JSON_UNESCAPED_SLASHES);
 
         // <base href> must land in <head>, before the <script>/<link> tags

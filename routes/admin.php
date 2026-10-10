@@ -5,7 +5,7 @@ use App\Http\Controllers\Admin\AuthController;
 use App\Http\Controllers\Admin\CertificateController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DeletionRequestController;
-use App\Http\Controllers\Admin\PdfEditorBridgeController;
+use App\Http\Controllers\Admin\PdfCertificatesController;
 use App\Http\Controllers\Admin\PdfStudioApiController;
 use App\Http\Controllers\Admin\PdfStudioController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
@@ -15,9 +15,6 @@ use App\Http\Controllers\Admin\QrTool\QrGroupController;
 use App\Http\Controllers\Admin\QrTool\QrImportController;
 use App\Http\Controllers\Admin\QrTool\QrOptionsController;
 use App\Http\Controllers\Admin\QrTool\QrRecordsController;
-use App\Http\Controllers\Admin\TemplateController;
-use App\Http\Controllers\Admin\TemplateDesignerController;
-use App\Http\Controllers\Admin\TemplateFieldController;
 use App\Http\Controllers\Admin\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -28,6 +25,12 @@ use Illuminate\Support\Facades\Route;
 | Loaded from bootstrap/app.php with the 'web' middleware group, 'admin'
 | prefix and 'admin.' route-name prefix already applied. No public
 | registration exists anywhere here — see CLAUDE.md.
+|
+| Two independent admin tools live here (see docs/PDF_STUDIO_INTEGRATION.md
+| for the full product writeup):
+|   A. PDF Certificates (pdf-certificates.* / pdf-studio.* / pdf-studio.api.*)
+|   B. QR Generator (qr.*) — fully independent of A, unaffected by it.
+| Form + Page Builder (forms.* / pages.*) are a separate package, untouched.
 */
 
 Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
@@ -43,48 +46,75 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::resource('users', UserController::class)->except(['show', 'destroy']);
     Route::patch('/users/{user}/toggle-active', [UserController::class, 'toggleActive'])->name('users.toggle-active');
 
-    // Certificate templates + their dynamic fields — both admin roles may
-    // manage these (see App\Policies\CertificateTemplatePolicy), unlike
-    // Users above. No 'show' route: the edit page IS the template's detail/
-    // management page (metadata + field list + preview), matching the
-    // pattern already used for Users. See docs/CERTIFICATE_SYSTEM.md.
-    Route::get('/templates', [TemplateController::class, 'index'])->name('templates.index');
-    Route::get('/templates/create', [TemplateController::class, 'create'])->name('templates.create');
-    Route::post('/templates', [TemplateController::class, 'store'])->name('templates.store');
-    Route::get('/templates/{template}/edit', [TemplateController::class, 'edit'])->name('templates.edit');
-    Route::patch('/templates/{template}', [TemplateController::class, 'update'])->name('templates.update');
-    Route::post('/templates/{template}/activate', [TemplateController::class, 'activate'])->name('templates.activate');
-    Route::post('/templates/{template}/archive', [TemplateController::class, 'archive'])->name('templates.archive');
+    // ------------------------------------------------------------------
+    // A. PDF Certificates — see docs/PDF_STUDIO_INTEGRATION.md.
+    // "New template or Saved templates" -> the real pdfeditor-based
+    // editor (pdf-studio.*) -> Excel instructions/import/preview/confirm
+    // (pdf-studio.api.*) -> batch history/resume/re-download, all one
+    // connected flow, no legacy designer/manual-handoff step anywhere.
+    // ------------------------------------------------------------------
+    Route::prefix('pdf-certificates')->name('pdf-certificates.')->group(function () {
+        Route::get('/', [PdfCertificatesController::class, 'index'])->name('index');
+        Route::get('/create', [PdfCertificatesController::class, 'create'])->name('create');
+        Route::post('/', [PdfCertificatesController::class, 'store'])->name('store');
+        Route::get('/{template}/edit', [PdfCertificatesController::class, 'edit'])->name('edit');
+        Route::patch('/{template}', [PdfCertificatesController::class, 'update'])->name('update');
+        Route::post('/{template}/archive', [PdfCertificatesController::class, 'archive'])->name('archive');
+        Route::get('/{template}/batches', [PdfCertificatesController::class, 'batches'])->name('batches');
+    });
 
-    // Background PDF + visual designer (Phase 4). showBackground is a GET so
-    // the designer's PDF.js viewer can fetch it directly (same-origin,
-    // session-cookie authorized) — see docs/CERTIFICATE_SYSTEM.md.
-    Route::post('/templates/{template}/background', [TemplateController::class, 'uploadBackground'])->name('templates.background.store');
-    Route::get('/templates/{template}/background', [TemplateController::class, 'showBackground'])->name('templates.background.show');
-    Route::get('/templates/{template}/designer', [TemplateDesignerController::class, 'edit'])->name('templates.designer.edit');
-    Route::post('/templates/{template}/designer', [TemplateDesignerController::class, 'update'])->name('templates.designer.update');
+    // Legacy entry points, redirected to their PDF Certificates
+    // replacement rather than left dangling — see docs/CHANGELOG.md's
+    // "Admin workflow cleanup" entry for the full before/after map.
+    Route::get('/templates', fn () => redirect()->route('admin.pdf-certificates.index'));
+    Route::get('/templates/create', fn () => redirect()->route('admin.pdf-certificates.create'));
+    Route::get('/templates/{template}/edit', fn ($template) => redirect()->route('admin.pdf-studio.show', $template));
+    Route::get('/certificates/issue', fn () => redirect()->route('admin.pdf-certificates.index'));
 
-    Route::get('/templates/{template}/fields/create', [TemplateFieldController::class, 'create'])->name('templates.fields.create');
-    Route::post('/templates/{template}/fields', [TemplateFieldController::class, 'store'])->name('templates.fields.store');
-    Route::get('/templates/{template}/fields/{field}/edit', [TemplateFieldController::class, 'edit'])->name('templates.fields.edit');
-    Route::patch('/templates/{template}/fields/{field}', [TemplateFieldController::class, 'update'])->name('templates.fields.update');
-    Route::delete('/templates/{template}/fields/{field}', [TemplateFieldController::class, 'destroy'])->name('templates.fields.destroy');
-    Route::post('/templates/{template}/fields/{field}/move-up', [TemplateFieldController::class, 'moveUp'])->name('templates.fields.move-up');
-    Route::post('/templates/{template}/fields/{field}/move-down', [TemplateFieldController::class, 'moveDown'])->name('templates.fields.move-down');
+    // Mounts the embedded, real pdfeditor build for a given template (and,
+    // optionally, straight into Generate mode for a given batch). Serves
+    // the editor shell; the JSON API below is what its adapter code
+    // (studio.html -> src/integration/ in the pdfeditor repo) calls, all
+    // same-origin, auth+CSRF protected like everything else here.
+    Route::get('/certificates/studio/{template}', [PdfStudioController::class, 'show'])->name('pdf-studio.show');
+    Route::get('/certificates/studio/{template}/prepare', [PdfStudioController::class, 'prepare'])->name('pdf-studio.prepare');
+    Route::get('/certificates/studio/{template}/batches/{batch}', [PdfStudioController::class, 'show'])->name('pdf-studio.show-batch');
 
-    // Single-certificate issuance (Phase 5, PDF-designer path — advanced/
-    // future, paused, not removed; see docs/CERTIFICATE_SYSTEM.md §Simple
-    // QR tool for the isolation boundary). No 'edit'/'destroy' -- issued
-    // certificates are immutable (§Snapshot strategy); revoke/reissue are
-    // Phase 8.
+    Route::prefix('api/pdf-studio')->name('pdf-studio.api.')->group(function () {
+        Route::get('/templates/{template}/source-pdf', [PdfStudioApiController::class, 'sourcePdf'])->name('templates.source-pdf');
+        Route::get('/templates/{template}/project', [PdfStudioApiController::class, 'getProject'])->name('templates.project.show');
+        Route::put('/templates/{template}/project', [PdfStudioApiController::class, 'saveProject'])->name('templates.project.store');
+        Route::get('/templates/{template}/schema', [PdfStudioApiController::class, 'schema'])->name('templates.schema');
+        Route::get('/templates/{template}/sample.xlsx', [PdfStudioApiController::class, 'sampleXlsx'])->name('templates.sample');
+        Route::post('/templates/{template}/batches', [PdfStudioApiController::class, 'prepareBatch'])->name('templates.batches.prepare');
+        Route::post('/templates/{template}/batches/confirm', [PdfStudioApiController::class, 'confirmBatch'])->name('templates.batches.confirm');
+
+        Route::get('/batches/{batch}/project', [PdfStudioApiController::class, 'getBatchProject'])->name('batches.project');
+        Route::get('/batches/{batch}/manifest', [PdfStudioApiController::class, 'manifest'])->name('batches.manifest');
+        Route::get('/batches/{batch}/status', [PdfStudioApiController::class, 'status'])->name('batches.status');
+        Route::get('/batches/{batch}/download.zip', [PdfStudioApiController::class, 'downloadZip'])->name('batches.download');
+
+        Route::post('/reservations/{reservation}/finalize', [PdfStudioApiController::class, 'finalizeReservation'])->name('reservations.finalize');
+    });
+    // Live, deterministic, never persisted separately from the codeword —
+    // see QrCodeService::pngBytes()'s own docblock for why there's nothing
+    // to cache here. Named outside the api. group so PdfStudioApiController
+    // can reference them via route() without the prefix.
+    Route::get('/api/pdf-studio/reservations/{reservation}/qr.png', [PdfStudioApiController::class, 'qrImage'])->name('pdf-studio.reservations.qr');
+    Route::get('/api/pdf-studio/reservations/{reservation}/photo', [PdfStudioApiController::class, 'photo'])->name('pdf-studio.reservations.photo');
+
+    // Certificate RECORDS browser — every certificate issued through PDF
+    // Certificates lands in this same `certificates` table, so this stays
+    // as the one place to search/view/download/audit them. The old manual
+    // single-certificate issuance form (choose-template/create/store) is
+    // removed; PDF Certificates' batch flow is the only way to issue one
+    // now, even for a single recipient. No 'edit'/'destroy' — issued
+    // certificates are immutable; revoke/reissue are a later phase.
     Route::get('/certificates', [CertificateController::class, 'index'])->name('certificates.index');
     // Must be registered before the {certificate}-bound routes below, or
     // "deleted" would be parsed as a certificate id. Read-only, super_admin
     // only — see docs/CERTIFICATE_SYSTEM.md §Admin lists.
     Route::get('/certificates/deleted', [CertificateController::class, 'deleted'])->name('certificates.deleted');
-    Route::get('/certificates/issue', [CertificateController::class, 'chooseTemplate'])->name('certificates.choose-template');
-    Route::get('/certificates/issue/{template}', [CertificateController::class, 'create'])->name('certificates.create');
-    Route::post('/certificates/issue/{template}', [CertificateController::class, 'store'])->name('certificates.store');
     // withTrashed(): a soft-deleted certificate's detail page still
     // resolves (rather than 404ing) so its "Record Deleted / Completed at"
     // state can be shown -- see docs/CERTIFICATE_SYSTEM.md §Record detail
@@ -98,12 +128,14 @@ Route::middleware(['auth', 'active'])->group(function () {
     // request/review workflow below.
     Route::post('/certificates/{certificate}/request-deletion', [DeletionRequestController::class, 'requestForCertificate'])->name('certificates.request-deletion');
 
-    // The simple QR tool — fully independent of CertificateTemplate/the PDF
-    // designer/activation lifecycle. See docs/CERTIFICATE_SYSTEM.md §Simple
-    // QR tool. Literal-segment routes (/generate, /records, /import,
-    // /categories) live under their own prefix specifically so they never
-    // collide with or get swallowed by the advanced /certificates/*
+    // ------------------------------------------------------------------
+    // B. QR Generator — fully independent of PDF Certificates/
+    // CertificateTemplate/PDF Studio. See docs/CERTIFICATE_SYSTEM.md
+    // §Simple QR tool. Literal-segment routes (/generate, /records,
+    // /import, /categories) live under their own prefix specifically so
+    // they never collide with or get swallowed by the /certificates/*
     // model-bound routes above.
+    // ------------------------------------------------------------------
     Route::prefix('qr-tool')->name('qr.')->group(function () {
         // The old-tool-parity page -- one screen, bound to a single fixed
         // category (config('qr-tool.primary_category_slug')), not a
@@ -176,6 +208,7 @@ Route::middleware(['auth', 'active'])->group(function () {
     // named admin.forms.* / admin.pages.*) are registered by the
     // tman1an/formbuilder package with this app's 'auth' + 'active'
     // middleware -- see config/formbuilder.php and docs/FORM_BUILDER.md.
+    // Untouched by this cleanup.
 
     // Controlled deletion — request -> Super Admin review -> approve/reject.
     // Covers both simple QR records and advanced certificates through the
@@ -190,49 +223,4 @@ Route::middleware(['auth', 'active'])->group(function () {
     // Read-only audit trail -- no edit/delete route exists anywhere for
     // this resource, on purpose. See App\Policies\AuditLogPolicy.
     Route::get('/logbook', [AuditLogController::class, 'index'])->name('logbook.index');
-
-    // PDF Editor Bridge (see docs/CERTIFICATE_SYSTEM.md §PDF Editor Bridge):
-    // the integration layer to the separate, client-side PDF Template
-    // Studio editor. "Bulk Generation" / "Batches" were ComingSoonController
-    // placeholders (Phase 7) until this bridge made them real — same nav
-    // entries, same route names, now backed by PdfEditorBridgeController.
-    Route::get('/bulk-generation', [PdfEditorBridgeController::class, 'create'])->name('bulk-generation.index');
-    Route::post('/bulk-generation', [PdfEditorBridgeController::class, 'store'])->name('bulk-generation.store');
-    Route::get('/batches', [PdfEditorBridgeController::class, 'index'])->name('batches.index');
-    Route::get('/batches/{batch}', [PdfEditorBridgeController::class, 'show'])->name('batches.show');
-    Route::get('/batches/{batch}/reservation.xlsx', [PdfEditorBridgeController::class, 'downloadReservationExcel'])->name('batches.reservation-excel');
-    Route::get('/batches/{batch}/qr-codes.zip', [PdfEditorBridgeController::class, 'downloadQrZip'])->name('batches.qr-zip');
-    Route::post('/batches/{batch}/finalize', [PdfEditorBridgeController::class, 'finalize'])->name('batches.finalize');
-
-    // PDF Studio — the direct, single-interface integration that supersedes
-    // the manual bridge above for day-to-day use (the bridge stays as a
-    // documented manual fallback — see docs/PDF_STUDIO_INTEGRATION.md).
-    // Serves the embedded, pinned pdfeditor build; the JSON API below is
-    // what its adapter code (studio.html -> src/integration/ in that repo)
-    // calls, all same-origin, auth+CSRF protected like everything else here.
-    Route::get('/certificates/studio/{template}', [PdfStudioController::class, 'show'])->name('pdf-studio.show');
-    Route::get('/certificates/studio/{template}/prepare', [PdfStudioController::class, 'prepare'])->name('pdf-studio.prepare');
-    Route::get('/certificates/studio/{template}/batches/{batch}', [PdfStudioController::class, 'show'])->name('pdf-studio.show-batch');
-
-    Route::prefix('api/pdf-studio')->name('pdf-studio.api.')->group(function () {
-        Route::get('/templates/{template}/project', [PdfStudioApiController::class, 'getProject'])->name('templates.project.show');
-        Route::put('/templates/{template}/project', [PdfStudioApiController::class, 'saveProject'])->name('templates.project.store');
-        Route::get('/templates/{template}/schema', [PdfStudioApiController::class, 'schema'])->name('templates.schema');
-        Route::get('/templates/{template}/sample.xlsx', [PdfStudioApiController::class, 'sampleXlsx'])->name('templates.sample');
-        Route::post('/templates/{template}/batches', [PdfStudioApiController::class, 'prepareBatch'])->name('templates.batches.prepare');
-        Route::post('/templates/{template}/batches/confirm', [PdfStudioApiController::class, 'confirmBatch'])->name('templates.batches.confirm');
-
-        Route::get('/batches/{batch}/project', [PdfStudioApiController::class, 'getBatchProject'])->name('batches.project');
-        Route::get('/batches/{batch}/manifest', [PdfStudioApiController::class, 'manifest'])->name('batches.manifest');
-        Route::get('/batches/{batch}/status', [PdfStudioApiController::class, 'status'])->name('batches.status');
-        Route::get('/batches/{batch}/download.zip', [PdfStudioApiController::class, 'downloadZip'])->name('batches.download');
-
-        Route::post('/reservations/{reservation}/finalize', [PdfStudioApiController::class, 'finalizeReservation'])->name('reservations.finalize');
-    });
-    // Live, deterministic, never persisted separately from the codeword —
-    // see QrCodeService::pngBytes()'s own docblock for why there's nothing
-    // to cache here. Named outside the api. group so PdfStudioApiController
-    // can reference them via route() without the prefix.
-    Route::get('/api/pdf-studio/reservations/{reservation}/qr.png', [PdfStudioApiController::class, 'qrImage'])->name('pdf-studio.reservations.qr');
-    Route::get('/api/pdf-studio/reservations/{reservation}/photo', [PdfStudioApiController::class, 'photo'])->name('pdf-studio.reservations.photo');
 });

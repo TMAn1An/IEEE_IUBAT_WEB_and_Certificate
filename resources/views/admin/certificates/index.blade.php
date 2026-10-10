@@ -11,7 +11,7 @@
       @can('viewDeleted', \App\Models\Certificate::class)
         <a href="{{ route('admin.certificates.deleted') }}" class="btn btn--ghost">Deleted Certificates</a>
       @endcan
-      <a href="{{ route('admin.certificates.choose-template') }}" class="btn btn--primary">Issue certificate</a>
+      <a href="{{ route('admin.pdf-certificates.index') }}" class="btn btn--primary">Issue via PDF Certificates</a>
     </div>
   </div>
 
@@ -47,7 +47,7 @@
               @if ($search !== '')
                 No certificates match "{{ $search }}".
               @else
-                No certificates yet. <a href="{{ route('admin.certificates.choose-template') }}">Issue the first one</a>.
+                No certificates yet. <a href="{{ route('admin.pdf-certificates.index') }}">Issue the first one via PDF Certificates</a>.
               @endif
             </td>
           </tr>
