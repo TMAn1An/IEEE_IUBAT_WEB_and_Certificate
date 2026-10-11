@@ -3,6 +3,30 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## Production auto-deploy workflow prepared, not yet activated (2026-10-11)
+
+- Reconciled `main` (which had already gained `.github/workflows/cpanel-connection-test.yml`)
+  with the `claude/happy-pascal-y6ek93` integration branch (QR/image asset-loading race fix +
+  pinned pdfeditor re-sync + the FormBuilderTest key-order fix below) via an ordinary merge —
+  both histories preserved, no conflicts, full suite still 178/178 after the merge.
+- Added a committed `package-lock.json` — it never existed before, so `npm run build` was
+  resolving floating `^`-range versions with no pinning between builds.
+- Added `.github/workflows/deploy-production.yml`: builds + validates on every push to `main`
+  (Composer, a disposable-sqlite migration dry run, the pdf-studio pinned-commit-vs-manifest
+  check, `npm ci && npm run build`), then deploys over SSH using the same five `CPANEL_*` secrets
+  and host-fingerprint verification as the existing connection-test workflow. Never runs
+  `migrate`/seeders/destructive cleanup against production. Never overwrites the live `.env` or
+  `public_html/index.php`. Takes a deploy lock (fails loudly instead of racing a concurrent run),
+  records the previous commit before deploying, and automatically rolls back to it if the
+  post-deploy smoke checks (homepage, `/admin/login`, a public asset) don't return 200.
+  `workflow_dispatch` with `dry_run: true` exercises the whole pipeline (build, SSH connect,
+  fingerprint check, lock/path inspection) without writing anything to production, so it can be
+  tested before the first real push-triggered deploy.
+- **Not yet activated**: this lives on a feature branch (`claude/activate-production-autodeploy`)
+  pending review and merge into `main`. The real push-to-`main` trigger only takes effect once
+  that merge happens, and the first real deploy should be watched manually, not assumed safe from
+  the dry run alone.
+
 ## Phase 0 — Repository audit and documentation (2026-09-17)
 
 - Inspected the entire existing plain-PHP public website (`index.php`, `about.php`,

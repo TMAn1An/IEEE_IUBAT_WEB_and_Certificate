@@ -1,0 +1,261 @@
+name: Deploy to Production (cPanel)
+
+# Fires only on pushes to main (i.e. after a PR has been merged there), plus a
+# manual workflow_dispatch for testing. The dispatch's dry_run input lets the
+# whole pipeline -- build, validate, SSH connect, lock check -- be exercised
+# without writing anything to the production server. A real deploy only
+# happens on a push to main, or a manual dispatch with dry_run explicitly set
+# to false.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: validate + connect only, write nothing to production"
+        type: boolean
+        default: true
+
+# Only one deployment at a time, ever. A second push while one is running
+# queues behind it rather than racing it (cancel-in-progress stays false on
+# purpose -- an in-flight deploy must finish or fail cleanly, never be killed
+# mid-way by a newer push).
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REMOTE_REPO_DIR: /home/ieeeiubat/repositories/ieee-web
+  REMOTE_PUBLIC_HTML: /home/ieeeiubat/public_html
+  PRODUCTION_URL: https://ieee.iubat.edu
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      deploy_sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the exact commit being deployed
+        id: sha
+        run: echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer:v2
+
+      - name: Composer validate + install
+        run: |
+          composer validate --no-check-publish
+          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+
+      - name: Validate migrations against a disposable sqlite DB (never touches production)
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force --quiet
+          # A real file, not ":memory:" -- separate `php artisan` invocations are separate
+          # processes and an in-memory sqlite DB does not survive between them, which would
+          # make migrate:status falsely report "no migrations table" right after a clean run.
+          touch /tmp/ci-migrate-check.sqlite
+          php artisan migrate --force
+          php artisan migrate:status
+          rm -f .env /tmp/ci-migrate-check.sqlite  # .env here is throwaway -- must never ship
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: /tmp/ci-migrate-check.sqlite
+
+      - name: Confirm pinned PDF Studio build matches the shipped editor assets
+        run: |
+          pinned=$(php -r "require 'vendor/autoload.php'; echo (require 'config/pdf-studio.php')['source_commit'];")
+          manifest=$(php -r "echo json_decode(file_get_contents('public/vendor/pdf-editor/manifest.json'), true)['commit'];")
+          echo "config/pdf-studio.php source_commit: $pinned"
+          echo "manifest.json commit:                $manifest"
+          test -n "$manifest"
+          if [ "$pinned" != "$manifest" ]; then
+            echo "::error::Pinned pdf-studio commit ($pinned) does not match synced asset manifest ($manifest) -- re-run scripts/sync-pdf-editor-assets.php"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install JS deps from the committed lockfile and build assets
+        run: |
+          npm ci
+          npm run build
+          test -f public/build/manifest.json
+
+      - name: Package the deployable application (code + vendor/ + built assets)
+        run: |
+          # .env is explicitly excluded: it must never be shipped from CI and must
+          # never overwrite the real production .env (APP_KEY, DB credentials, etc).
+          tar --exclude='.git' --exclude='node_modules' --exclude='tests' \
+              --exclude='.env' --exclude='.env.*' \
+              --exclude='storage/app/private' --exclude='storage/logs' \
+              -czf /tmp/release.tar.gz .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: /tmp/release.tar.gz
+          retention-days: 14
+
+  deploy:
+    needs: build-and-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: /tmp
+
+      - name: Establish a fingerprint-verified SSH connection
+        id: ssh-setup
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.CPANEL_HOST }}
+          SSH_PORT: ${{ secrets.CPANEL_PORT }}
+          SSH_USER: ${{ secrets.CPANEL_USER }}
+          SSH_KEY: ${{ secrets.CPANEL_SSH_KEY }}
+          HOST_FINGERPRINT: ${{ secrets.CPANEL_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work_dir="$(mktemp -d)"
+          echo "work_dir=$work_dir" >> "$GITHUB_OUTPUT"
+
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$work_dir/key"
+          chmod 600 "$work_dir/key"
+
+          ssh-keyscan -T 15 -p "$SSH_PORT" -t ed25519 "$SSH_HOST" > "$work_dir/known_hosts"
+          actual="$(ssh-keygen -lf "$work_dir/known_hosts" -E sha256 | awk '{print $2}' | sort -u)"
+          if [ "$actual" != "$HOST_FINGERPRINT" ]; then
+            echo "::error::Server fingerprint mismatch ($actual). Refusing to deploy -- possible MITM or rotated host key that needs re-verifying out of band."
+            exit 1
+          fi
+
+          cat > "$work_dir/ssh.sh" <<EOF
+          #!/bin/bash
+          ssh -i "$work_dir/key" -p "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work_dir/known_hosts" \
+              -o ConnectTimeout=20 "$SSH_USER@$SSH_HOST" "\$@"
+          EOF
+          chmod +x "$work_dir/ssh.sh"
+
+          cat > "$work_dir/scp.sh" <<EOF
+          #!/bin/bash
+          scp -i "$work_dir/key" -P "$SSH_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work_dir/known_hosts" \
+              -o ConnectTimeout=20 "\$@"
+          EOF
+          chmod +x "$work_dir/scp.sh"
+
+      - name: Dry run -- read-only connectivity + lock check, no writes
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          work_dir="${{ steps.ssh-setup.outputs.work_dir }}"
+          "$work_dir/ssh.sh" "
+            set -e
+            echo '--- whoami / tool versions ---'
+            whoami && php -v && git --version && composer --version
+            echo '--- target paths exist? ---'
+            test -d '${{ env.REMOTE_REPO_DIR }}' && echo 'repo dir OK' || echo 'repo dir MISSING'
+            test -d '${{ env.REMOTE_PUBLIC_HTML }}' && echo 'public_html OK' || echo 'public_html MISSING'
+            test -f '${{ env.REMOTE_PUBLIC_HTML }}/index.php' && echo 'index.php present (will NOT be touched)' || echo 'index.php MISSING -- investigate before any real deploy'
+            echo '--- deploy lock currently held? ---'
+            if [ -d '${{ env.REMOTE_REPO_DIR }}/.deploy.lock' ]; then echo 'LOCK HELD -- a real deploy would wait/fail here'; else echo 'lock free'; fi
+            echo '--- current deployed commit ---'
+            git -C '${{ env.REMOTE_REPO_DIR }}' rev-parse HEAD 2>&1 || echo '(not yet a git checkout, or path missing)'
+          "
+          echo "::notice::DRY RUN complete. No files were written and no services were restarted on production."
+
+      - name: Real deploy
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+        env:
+          DEPLOY_SHA: ${{ needs.build-and-validate.outputs.deploy_sha }}
+        run: |
+          set -euo pipefail
+          work_dir="${{ steps.ssh-setup.outputs.work_dir }}"
+          ssh_run() { "$work_dir/ssh.sh" "$@"; }
+
+          echo "--- acquiring deploy lock (fails loudly if one is already held) ---"
+          ssh_run "mkdir '${{ env.REMOTE_REPO_DIR }}/.deploy.lock' || { echo '::error::Another deployment is already in progress (lock held). Aborting.'; exit 1; }"
+
+          # Always release the lock, whatever happens below.
+          cleanup() { ssh_run "rmdir '${{ env.REMOTE_REPO_DIR }}/.deploy.lock' 2>/dev/null || true"; }
+          trap cleanup EXIT
+
+          echo "--- recording rollback point ---"
+          prev_sha="$(ssh_run "git -C '${{ env.REMOTE_REPO_DIR }}' rev-parse HEAD")"
+          echo "Previous deployed commit: $prev_sha"
+          ssh_run "cp -a '${{ env.REMOTE_PUBLIC_HTML }}'/build '${{ env.REMOTE_REPO_DIR }}'/.deploy.lock/build.bak 2>/dev/null || true"
+
+          echo "--- shipping release artifact ---"
+          "$work_dir/scp.sh" /tmp/release.tar.gz "${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }}:/tmp/release-$DEPLOY_SHA.tar.gz"
+
+          rollback() {
+            echo "::error::Deploy step failed -- rolling back to $prev_sha"
+            ssh_run "
+              set -e
+              cd '${{ env.REMOTE_REPO_DIR }}'
+              git checkout --quiet --detach '$prev_sha'
+              composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --quiet
+              php artisan config:clear --quiet
+              php artisan config:cache --quiet
+              php artisan route:cache --quiet
+              php artisan view:cache --quiet
+              if [ -d .deploy.lock/build.bak ]; then rsync -a --delete .deploy.lock/build.bak/ '${{ env.REMOTE_PUBLIC_HTML }}/build/'; fi
+            "
+            echo "::error::Rollback to $prev_sha completed. Production is serving the previous release. This workflow run is FAILED, not succeeded -- investigate before retrying."
+            exit 1
+          }
+
+          echo "--- applying new release (never runs migrate/seed/destructive storage cleanup) ---"
+          ssh_run "
+            set -e
+            cd '${{ env.REMOTE_REPO_DIR }}'
+            tar --exclude='.env' --exclude='.env.*' -xzf /tmp/release-$DEPLOY_SHA.tar.gz
+            rm -f /tmp/release-$DEPLOY_SHA.tar.gz
+            test -f .env || { echo '::error::Production .env is missing after extraction -- aborting before any further step.'; exit 1; }
+            git checkout --quiet --detach '$DEPLOY_SHA'
+            composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --quiet
+            php artisan config:clear --quiet
+            php artisan config:cache --quiet
+            php artisan route:cache --quiet
+            php artisan view:cache --quiet
+            chmod -R ug+rwX storage bootstrap/cache
+            rsync -a --delete --exclude='index.php' public/ '${{ env.REMOTE_PUBLIC_HTML }}/'
+          " || rollback
+
+          echo "--- smoke checks against production ---"
+          check() {
+            local url="$1" expect="$2"
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || echo 000)
+            echo "  $url -> $code"
+            [ "$code" = "$expect" ]
+          }
+          smoke_ok=1
+          check "${{ env.PRODUCTION_URL }}/" 200 || smoke_ok=0
+          check "${{ env.PRODUCTION_URL }}/admin/login" 200 || smoke_ok=0
+          check "${{ env.PRODUCTION_URL }}/favicon.ico" 200 || smoke_ok=0
+
+          if [ "$smoke_ok" != "1" ]; then
+            rollback
+          fi
+
+          echo "::notice::Deploy of $DEPLOY_SHA succeeded. Smoke checks passed. Previous commit was $prev_sha."
+
+      - name: Clean up temporary SSH material
+        if: always()
+        run: rm -rf "${{ steps.ssh-setup.outputs.work_dir }}"
