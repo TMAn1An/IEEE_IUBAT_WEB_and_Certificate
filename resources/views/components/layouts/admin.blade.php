@@ -19,7 +19,10 @@
     </div>
     <ul class="admin-nav">
       <li><a href="{{ route('admin.dashboard') }}" class="{{ request()->routeIs('admin.dashboard') ? 'is-active' : '' }}">Dashboard</a></li>
-      <li class="admin-nav__heading">Certificate QR Tool</li>
+      <li class="admin-nav__heading">PDF Certificates</li>
+      <li><a href="{{ route('admin.pdf-certificates.index') }}" class="{{ request()->routeIs('admin.pdf-certificates.*', 'admin.pdf-studio.*') ? 'is-active' : '' }}">Templates &amp; Batches</a></li>
+      <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.*') ? 'is-active' : '' }}">Certificate Records</a></li>
+      <li class="admin-nav__heading">QR Generator</li>
       <li><a href="{{ route('admin.qr.generate.show') }}" class="{{ request()->routeIs('admin.qr.generate.*') ? 'is-active' : '' }}">Generate QR</a></li>
       <li><a href="{{ route('admin.qr.records.index') }}" class="{{ request()->routeIs('admin.qr.records.*') ? 'is-active' : '' }}">Records</a></li>
       <li><a href="{{ route('admin.qr.groups.index') }}" class="{{ request()->routeIs('admin.qr.groups.*') ? 'is-active' : '' }}">Groups</a></li>
@@ -32,11 +35,6 @@
       <li class="admin-nav__heading">Pages</li>
       <li><a href="{{ route('admin.pages.index') }}" class="{{ request()->routeIs('admin.pages.index', 'admin.pages.edit', 'admin.pages.preview') ? 'is-active' : '' }}">All Pages</a></li>
       <li><a href="{{ route('admin.pages.create') }}" class="{{ request()->routeIs('admin.pages.create') ? 'is-active' : '' }}">Create Page</a></li>
-      <li class="admin-nav__heading">Advanced / Future</li>
-      <li><a href="{{ route('admin.templates.index') }}" class="{{ request()->routeIs('admin.templates.*') ? 'is-active' : '' }}">Certificate Templates</a></li>
-      <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.*') ? 'is-active' : '' }}">Advanced Certificates</a></li>
-      <li><a href="{{ route('admin.bulk-generation.index') }}" class="{{ request()->routeIs('admin.bulk-generation.*') ? 'is-active' : '' }}">Bulk Generation</a></li>
-      <li><a href="{{ route('admin.batches.index') }}" class="{{ request()->routeIs('admin.batches.*') ? 'is-active' : '' }}">Batches</a></li>
       @can('viewAny', \App\Models\User::class)
         <li><a href="{{ route('admin.users.index') }}" class="{{ request()->routeIs('admin.users.*') ? 'is-active' : '' }}">Users</a></li>
       @endcan

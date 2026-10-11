@@ -2,26 +2,28 @@
 
 namespace App\Http\Controllers\Admin;
 
-use App\Enums\CertificateTemplateStatus;
 use App\Enums\DeletableRecordType;
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Admin\IssueCertificateRequest;
 use App\Models\Certificate;
-use App\Models\CertificateTemplate;
 use App\Models\DeletionRequest;
-use App\Services\Certificates\CertificateIssuanceService;
 use Illuminate\Contracts\View\View;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
+/**
+ * The certificate RECORDS browser — search/view/download/audit every
+ * certificate issued through PDF Certificates (see
+ * docs/PDF_STUDIO_INTEGRATION.md). The old manual single-certificate
+ * issuance form (choose template -> fill fields -> issue) was removed in
+ * the admin workflow cleanup: PDF Certificates' batch flow is the only way
+ * to issue a certificate now, even for a single recipient. No 'edit' route
+ * — issued certificates are immutable (§Snapshot strategy); revoke/reissue
+ * are a later phase.
+ */
 class CertificateController extends Controller
 {
-    public function __construct(private readonly CertificateIssuanceService $issuance) {}
-
     public function index(Request $request): View
     {
         $this->authorize('viewAny', Certificate::class);
@@ -45,46 +47,6 @@ class CertificateController extends Controller
             'certificates' => $certificates,
             'search' => $search,
         ]);
-    }
-
-    public function chooseTemplate(): View
-    {
-        $this->authorize('create', Certificate::class);
-
-        $templates = CertificateTemplate::query()
-            ->where('status', CertificateTemplateStatus::Active)
-            ->orderBy('name')
-            ->get();
-
-        return view('admin.certificates.choose-template', ['templates' => $templates]);
-    }
-
-    public function create(CertificateTemplate $template): View
-    {
-        $this->authorize('create', Certificate::class);
-        $this->authorize('view', $template);
-        $this->ensureTemplateIsActive($template);
-
-        return view('admin.certificates.issue', [
-            'template' => $template,
-            'fields' => $template->fields,
-        ]);
-    }
-
-    public function store(IssueCertificateRequest $request, CertificateTemplate $template): RedirectResponse
-    {
-        $this->ensureTemplateIsActive($template);
-
-        $result = $this->issuance->issue($template, $request->validated()['fields'] ?? [], $request->user());
-
-        $status = 'Certificate '.$result->certificate->certificate_number.' issued.';
-        if ($result->overflowWarnings !== []) {
-            $status .= ' Warning: '.implode(' ', $result->overflowWarnings);
-        }
-
-        return redirect()
-            ->route('admin.certificates.show', $result->certificate)
-            ->with('status', $status);
     }
 
     /** See Admin\QrTool\QrRecordsController::deleted() — identical reasoning. */
@@ -123,14 +85,5 @@ class CertificateController extends Controller
             "{$certificate->certificate_number}.pdf",
             ['Content-Type' => 'application/pdf']
         );
-    }
-
-    private function ensureTemplateIsActive(CertificateTemplate $template): void
-    {
-        if ($template->status !== CertificateTemplateStatus::Active) {
-            throw ValidationException::withMessages([
-                'template' => 'Only active templates can be used to issue certificates.',
-            ]);
-        }
     }
 }

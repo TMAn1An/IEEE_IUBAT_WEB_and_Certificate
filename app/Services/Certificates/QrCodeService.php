@@ -3,22 +3,28 @@
 namespace App\Services\Certificates;
 
 use App\Models\Certificate;
-use setasign\Fpdi\Tcpdf\Fpdi;
 use TCPDF2DBarcode;
 
 /**
- * QR content and rendering, kept separate from CertificatePdfService per
+ * QR content and rendering, kept in its own dedicated service per
  * CLAUDE.md's "Keep QR logic in a dedicated QrCodeService" rule. The QR
  * encodes ONLY the future verification URL (never certificate data
  * directly) — see docs/CERTIFICATE_SYSTEM.md §QR contents.
  *
- * No new package: TCPDF bundles native QR generation. `write2DBarcode()`
- * draws a real vector shape into an open PDF document (used by
- * CertificatePdfService); `TCPDF2DBarcode::getBarcodePngData()` (used by
- * `pngBytes()` below) generates the same QR as standalone PNG bytes with no
- * PDF document involved at all — confirmed working in the Phase 6 spike.
- * Adding a separate QR library (e.g. endroid/qr-code) would duplicate
+ * No new package: `tecnickcom/tcpdf` (already a dependency for the simple
+ * QR tool's/PDF Studio's QR PNGs) bundles native QR generation —
+ * `TCPDF2DBarcode::getBarcodePngData()` (used by `pngBytes()` below)
+ * generates a QR as standalone PNG bytes with no PDF document involved at
+ * all. Adding a separate QR library (e.g. endroid/qr-code) would duplicate
  * functionality already present in a dependency this project needs anyway.
+ * This class previously also had a `drawOnPdf()` method
+ * (`write2DBarcode()`, drawing a QR directly into an open `setasign/fpdi`
+ * PDF document) for the old server-side single-certificate/PdfEditorBridge
+ * PDF rendering pipelines — removed as dead code along with those
+ * pipelines in the admin workflow cleanup (`setasign/fpdi` had no other
+ * caller and was dropped from composer.json). PDF Studio never rendered
+ * PDFs server-side at all — the QR is composited client-side by the
+ * pdfeditor engine from this same PNG.
  */
 class QrCodeService
 {
@@ -43,21 +49,6 @@ class QrCodeService
     public function verificationUrlForCodeword(string $codeword): string
     {
         return route('certificate.verify', ['codeword' => $codeword]);
-    }
-
-    /** @param  array{x: float, y: float, width: float, height: float}  $tcpdfBox  Already converted — see PdfCoordinateConverter. */
-    public function drawOnPdf(Fpdi $pdf, array $tcpdfBox, string $url): void
-    {
-        $pdf->write2DBarcode(
-            $url,
-            'QRCODE,M',
-            $tcpdfBox['x'],
-            $tcpdfBox['y'],
-            $tcpdfBox['width'],
-            $tcpdfBox['height'],
-            [],
-            'N'
-        );
     }
 
     /**

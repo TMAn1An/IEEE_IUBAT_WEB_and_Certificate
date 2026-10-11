@@ -292,12 +292,6 @@ table.admin-table {
   margin: 0 0 24px;
 }
 
-.coming-soon {
-  text-align: center;
-  padding: 60px 20px;
-  color: var(--muted);
-}
-
 /* ---------------------------------------------------- template designer */
 .admin-content--wide { max-width: none; }
 

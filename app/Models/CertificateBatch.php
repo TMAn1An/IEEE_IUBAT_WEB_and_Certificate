@@ -14,12 +14,16 @@ class CertificateBatch extends Model
 
     protected $fillable = [
         'certificate_template_id',
+        'source',
         'name',
         'status',
         'total_rows',
         'successful_rows',
         'failed_rows',
         'created_by',
+        'idempotency_key',
+        'editor_schema_version',
+        'editor_project_path',
     ];
 
     protected function casts(): array
@@ -29,6 +33,7 @@ class CertificateBatch extends Model
             'total_rows' => 'integer',
             'successful_rows' => 'integer',
             'failed_rows' => 'integer',
+            'editor_schema_version' => 'integer',
         ];
     }
 
@@ -42,6 +47,18 @@ class CertificateBatch extends Model
     public function certificates(): HasMany
     {
         return $this->hasMany(Certificate::class);
+    }
+
+    /**
+     * PDF Editor Bridge reservations — only populated for batches created
+     * via that path (`source === 'pdf_editor_bridge'`). See
+     * docs/CERTIFICATE_SYSTEM.md §PDF Editor Bridge.
+     *
+     * @return HasMany<CertificateBatchReservation, $this>
+     */
+    public function reservations(): HasMany
+    {
+        return $this->hasMany(CertificateBatchReservation::class)->orderBy('row_index');
     }
 
     /** @return BelongsTo<User, $this> */

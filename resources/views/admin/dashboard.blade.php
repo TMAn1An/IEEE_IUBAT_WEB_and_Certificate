@@ -10,7 +10,7 @@
     </div>
     <div class="admin-stat">
       <div class="admin-stat__n">{{ $batchCount }}</div>
-      <div class="admin-stat__l">Bulk batches</div>
+      <div class="admin-stat__l">Batches generated</div>
     </div>
     <div class="admin-stat">
       <div class="admin-stat__n">{{ $adminCount }}</div>
@@ -20,10 +20,10 @@
 
   <div class="admin-card">
     <h2 style="margin-top:0">Welcome, {{ auth()->user()->name }}</h2>
-    <p style="color:var(--muted)">
-      You're signed in as <strong>{{ auth()->user()->role->label() }}</strong>.
-      Template management, certificate generation and bulk uploads land in upcoming phases — see
-      the nav for what's planned and when.
-    </p>
+    <p style="color:var(--muted)">You're signed in as <strong>{{ auth()->user()->role->label() }}</strong>.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <a href="{{ route('admin.pdf-certificates.index') }}" class="btn btn--primary">Open PDF Certificates</a>
+      <a href="{{ route('admin.qr.generate.show') }}" class="btn btn--ghost">Open QR Generator</a>
+    </div>
   </div>
 </x-layouts.admin>
