@@ -77,7 +77,11 @@ class FormBuilderTest extends TestCase
         $this->assertSame([['label' => 'CSE', 'value' => 'cse'], ['label' => 'EEE', 'value' => 'eee'], ['label' => 'Other', 'value' => 'other']], $department->options());
         $this->assertSame('cse', $department->setting('default_value'));
 
-        $this->assertSame(['content' => 'About you', 'heading_level' => 'h2', 'text_align' => 'center'], $fields[3]->settings);
+        // assertEquals, not assertSame: MySQL's native JSON column type does not
+        // guarantee member order on round-trip (keys/values are unaffected). SQLite
+        // stores JSON as plain TEXT and happens to preserve order, which is why this
+        // only showed up against a real MySQL test database.
+        $this->assertEquals(['content' => 'About you', 'heading_level' => 'h2', 'text_align' => 'center'], $fields[3]->settings);
 
         // Reorder: move "age" to the top; ids are kept, order changes.
         $payload = $this->fieldsAsPayload($form);
@@ -326,7 +330,9 @@ class FormBuilderTest extends TestCase
             $this->fieldDef('select', 'department', 'Department', ['settings' => ['options' => $options]]),
             $this->fieldDef('text', 'other_department', 'Other department', ['required' => true, 'conditional_rules' => $rule]),
         ])->assertOk();
-        $this->assertSame($rule, $form->fresh()->fields[1]->conditional_rules);
+        // assertEquals, not assertSame -- see the comment at the settings() assertion
+        // above: MySQL's JSON column type doesn't preserve member order on round-trip.
+        $this->assertEquals($rule, $form->fresh()->fields[1]->conditional_rules);
 
         // Unknown key
         $bad = $rule;
