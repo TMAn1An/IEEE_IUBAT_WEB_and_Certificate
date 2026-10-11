@@ -57,6 +57,13 @@ jobs:
       deploy_sha: ${{ steps.sha.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Default fetch-depth:1 would make the destructive-migration
+          # heuristic's `HEAD~20` range always invalid (git log silently
+          # no-ops inside an `if`, rather than erroring -- it just never
+          # actually checks anything). 50 is comfortably more than any
+          # single push is expected to carry.
+          fetch-depth: 50
 
       - name: Record the exact commit being deployed
         id: sha
@@ -67,10 +74,10 @@ jobs:
           php-version: "8.2"
           tools: composer:v2
 
-      - name: Composer validate + install
+      - name: Composer validate + full install (with dev deps, needed to run tests)
         run: |
           composer validate --no-check-publish
-          composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+          composer install --prefer-dist --no-interaction
 
       - name: Run the Laravel test suite (sqlite, fully disposable)
         run: |
@@ -131,6 +138,9 @@ jobs:
 
       - name: Clean up the throwaway CI .env before packaging
         run: rm -f .env /tmp/ci-migrate-check.sqlite
+
+      - name: Re-install without dev dependencies for the shipped release
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
       - name: Package the deployable application (code + vendor/ + built assets)
         run: |
