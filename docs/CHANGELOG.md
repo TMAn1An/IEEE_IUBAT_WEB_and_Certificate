@@ -22,10 +22,14 @@ project-behavior changelog, not a raw git log — explain what changed and why i
   `workflow_dispatch` with `dry_run: true` exercises the whole pipeline (build, SSH connect,
   fingerprint check, lock/path inspection) without writing anything to production, so it can be
   tested before the first real push-triggered deploy.
-- **Not yet activated**: this lives on a feature branch (`claude/activate-production-autodeploy`)
-  pending review and merge into `main`. The real push-to-`main` trigger only takes effect once
-  that merge happens, and the first real deploy should be watched manually, not assumed safe from
-  the dry run alone.
+- **Staged rollout, not yet activated**: GitHub only allows `workflow_dispatch` against a
+  workflow file that already exists on the default branch, so this ships `workflow_dispatch`-only
+  for now (no `on: push`) -- merging it into `main` is itself a no-op with zero chance of
+  triggering an unsupervised deploy. Once merged, a `dry_run: true` dispatch and then one
+  supervised `dry_run: false` dispatch should both succeed against `main` before a small
+  follow-up PR adds the real `on: push: branches: [main]` trigger. Recommend also adding a
+  required-reviewer rule on the `production` GitHub Environment as a second gate before that
+  follow-up lands.
 
 ## Phase 0 — Repository audit and documentation (2026-09-17)
 

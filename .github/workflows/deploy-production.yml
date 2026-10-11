@@ -1,14 +1,15 @@
 name: Deploy to Production (cPanel)
 
-# Fires only on pushes to main (i.e. after a PR has been merged there), plus a
-# manual workflow_dispatch for testing. The dispatch's dry_run input lets the
-# whole pipeline -- build, validate, SSH connect, lock check -- be exercised
-# without writing anything to the production server. A real deploy only
-# happens on a push to main, or a manual dispatch with dry_run explicitly set
-# to false.
+# Intentionally workflow_dispatch-only for now -- see docs/CHANGELOG.md and the
+# PR this ships in. GitHub only allows workflow_dispatch against a workflow
+# file that already exists on the default branch, which makes a staged
+# rollout necessary: this file has to land on main before it can be
+# dispatched and tested at all. Adding `on: push: branches: [main]` in the
+# same change that lands the workflow on main would mean the very first run
+# against real production is an untested, unsupervised push trigger. So this
+# PR ships dispatch-only; a small follow-up PR adds the push trigger once a
+# dry run and one supervised manual deploy have both succeeded against main.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -161,7 +162,7 @@ jobs:
           chmod +x "$work_dir/scp.sh"
 
       - name: Dry run -- read-only connectivity + lock check, no writes
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        if: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           work_dir="${{ steps.ssh-setup.outputs.work_dir }}"
@@ -181,7 +182,7 @@ jobs:
           echo "::notice::DRY RUN complete. No files were written and no services were restarted on production."
 
       - name: Real deploy
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+        if: ${{ !inputs.dry_run }}
         env:
           DEPLOY_SHA: ${{ needs.build-and-validate.outputs.deploy_sha }}
         run: |
