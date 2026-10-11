@@ -138,14 +138,59 @@ After launch, ongoing:
   **excluded** from what counts as a critical backup — they're regenerable from the DB + stored
   per-certificate PDFs and are cleaned up on their own schedule anyway.
 
+## Automated deployment: releases/shared/current layout
+
+`.github/workflows/deploy-production.yml` (manual `workflow_dispatch` only, see the workflow
+file's own comments for the staged activation plan) deploys into this layout instead of the flat
+`repositories/ieee-web` checkout, so a new release is built fully in its own directory and
+activated with one atomic symlink swap -- the live site is never serving a half-written mix of
+old and new files:
+
+```
+/home/ieeeiubat/
+├── releases/<git-sha>/     <- one full, independent checkout + vendor/ per deployed commit
+├── shared/.env             <- the real .env -- every release symlinks to this, never its own copy
+├── shared/storage/         <- same: symlinked into every release, never copied/overwritten
+├── current -> releases/<git-sha>/   <- re-pointed atomically on each deploy
+├── backups/releases/       <- a public_html snapshot taken before each deploy
+├── backups/db/             <- a mysqldump taken before each migrate
+├── repositories/ieee-web/  <- the original flat checkout, left in place as a fallback
+└── public_html/            <- built from current/public/, except index.php/.htaccess/.well-known
+```
+
+**One-time setup** (not run by any workflow -- `scripts/production-bootstrap.sh`, run manually
+over SSH with a human watching, after a fresh backup): moves the existing `.env` and `storage/`
+out of `repositories/ieee-web` into `shared/` (symlinking them back so the old checkout keeps
+working), creates the first `releases/<sha>/` as a copy of the current checkout, creates `current`,
+and edits `public_html/index.php`'s absolute bootstrap path from `repositories/ieee-web` to
+`current` -- after backing up the original file and validating the edit with `php -l`, refusing to
+guess if the expected literal path string isn't found. It never deletes `repositories/ieee-web`.
+
+Every subsequent deploy: builds `releases/<new-sha>/`, symlinks `.env`/`storage` back to
+`shared/`, backs up the DB, runs `migrate --force` (after a heuristic scan refuses to
+auto-apply a migration whose `--pretend` SQL contains `DROP`/`TRUNCATE`/`RENAME COLUMN`), caches,
+swaps `current`, rsyncs `current/public/` into `public_html/` (excluding `index.php`, `.htaccess`,
+`.well-known`), then runs smoke checks and rolls the `current` symlink + `public_html` back to the
+previous release on any failure. Old releases beyond the last 5 are pruned; `shared/` and
+`backups/` are never touched by pruning.
+
 ## Rollback procedure
 
-- Code: `git` makes reverting to a previous commit straightforward; keep the previous release's
-  `vendor/` available or be ready to re-run `composer install` against the reverted commit.
+- **Automated path** (post-bootstrap): rolling back is re-pointing `current` to the previous
+  `releases/<sha>/` and re-syncing `public_html/` from it -- the deploy workflow does this itself
+  on any failed step or failed smoke check. The previous release directory is never deleted until
+  pruning drops it past the retention window, so a manual rollback days later is still just a
+  symlink swap + rsync, not a re-checkout.
+- Code (pre-bootstrap / manual): `git` makes reverting to a previous commit straightforward; keep
+  the previous release's `vendor/` available or be ready to re-run `composer install` against the
+  reverted commit.
 - Database: migrations should be written rollback-safe (`down()` methods that actually reverse
   the `up()`) wherever realistically possible, so `php artisan migrate:rollback` is a real option;
   document any migration where a clean rollback isn't possible (e.g. a destructive data
-  transformation) directly in that migration's file.
+  transformation) directly in that migration's file. The automated deploy takes a `mysqldump`
+  backup to `backups/db/` immediately before every `migrate --force`, and refuses to run a
+  migration whose `--pretend` output looks destructive -- that case needs a manual, reviewed
+  migration instead of the automated one.
 - Before any risky production migration step, take a fresh DB backup specifically for that
   deploy, separate from the regular schedule.
 

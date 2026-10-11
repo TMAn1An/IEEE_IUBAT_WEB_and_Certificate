@@ -1,14 +1,21 @@
 name: Deploy to Production (cPanel)
 
-# Intentionally workflow_dispatch-only for now -- see docs/CHANGELOG.md and the
-# PR this ships in. GitHub only allows workflow_dispatch against a workflow
-# file that already exists on the default branch, which makes a staged
-# rollout necessary: this file has to land on main before it can be
-# dispatched and tested at all. Adding `on: push: branches: [main]` in the
-# same change that lands the workflow on main would mean the very first run
-# against real production is an untested, unsupervised push trigger. So this
-# PR ships dispatch-only; a small follow-up PR adds the push trigger once a
-# dry run and one supervised manual deploy have both succeeded against main.
+# Intentionally workflow_dispatch-only for now -- see docs/CHANGELOG.md and PR #1.
+# GitHub only allows workflow_dispatch against a workflow file that already
+# exists on the default branch, so this file has to land on main before it
+# can be dispatched and tested at all. Adding `on: push: branches: [main]` in
+# the same change that lands it on main would make the very first run
+# against real production an untested, unsupervised push trigger. So this
+# ships dispatch-only; a tiny follow-up PR adds the push trigger (Phase E)
+# once a dry run and one supervised manual deploy have both succeeded.
+#
+# One-time prerequisite (NOT performed by this workflow): the production
+# server must already be bootstrapped into the releases/shared/current
+# layout this workflow assumes (see scripts/production-bootstrap.sh and
+# docs/DEPLOYMENT_CPANEL.md's "Releases layout" section). This workflow
+# checks for that layout and fails with a clear message rather than
+# attempting to restructure the server itself -- that is a separate,
+# explicitly-gated, one-time action.
 on:
   workflow_dispatch:
     inputs:
@@ -29,14 +36,23 @@ permissions:
   contents: read
 
 env:
-  REMOTE_REPO_DIR: /home/ieeeiubat/repositories/ieee-web
+  REMOTE_BASE: /home/ieeeiubat
+  REMOTE_RELEASES: /home/ieeeiubat/releases
+  REMOTE_SHARED: /home/ieeeiubat/shared
+  REMOTE_CURRENT: /home/ieeeiubat/current
   REMOTE_PUBLIC_HTML: /home/ieeeiubat/public_html
+  REMOTE_BACKUPS: /home/ieeeiubat/backups/releases
   PRODUCTION_URL: https://ieee.iubat.edu
+  # A lock older than this is treated as abandoned by a crashed/killed run
+  # rather than a genuinely in-progress one -- kept comfortably above this
+  # job's own timeout-minutes so a *real* in-progress run can never be
+  # mistaken for stale.
+  LOCK_STALE_SECONDS: 1800
 
 jobs:
   build-and-validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     outputs:
       deploy_sha: ${{ steps.sha.outputs.sha }}
     steps:
@@ -56,20 +72,37 @@ jobs:
           composer validate --no-check-publish
           composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
 
-      - name: Validate migrations against a disposable sqlite DB (never touches production)
+      - name: Run the Laravel test suite (sqlite, fully disposable)
         run: |
           cp .env.example .env
           php artisan key:generate --force --quiet
-          # A real file, not ":memory:" -- separate `php artisan` invocations are separate
-          # processes and an in-memory sqlite DB does not survive between them, which would
-          # make migrate:status falsely report "no migrations table" right after a clean run.
+          php artisan test
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ":memory:"
+
+      - name: Validate pending migrations against a disposable sqlite DB
+        run: |
+          # A real file, not ":memory:" -- separate `php artisan` invocations are
+          # separate processes and an in-memory sqlite DB does not survive
+          # between them.
           touch /tmp/ci-migrate-check.sqlite
           php artisan migrate --force
           php artisan migrate:status
-          rm -f .env /tmp/ci-migrate-check.sqlite  # .env here is throwaway -- must never ship
         env:
           DB_CONNECTION: sqlite
           DB_DATABASE: /tmp/ci-migrate-check.sqlite
+
+      - name: Record a destructive-migration heuristic check for the deploy job
+        run: |
+          # Heuristic, not a guarantee: flags DROP/TRUNCATE/RENAME COLUMN in any
+          # migration file added/changed since the last deployed commit. The
+          # deploy job re-runs this check against the *actual* pending set
+          # (this is just a build-time early warning).
+          if git log -p --no-color "${{ github.event.before || 'HEAD~20' }}..HEAD" -- database/migrations 2>/dev/null \
+               | grep -iE '^\+.*\b(dropColumn|dropIfExists|Schema::drop\(|truncate\(|renameColumn)\b'; then
+            echo "::warning::One or more recently-changed migrations contain drop/truncate/rename-column calls. The deploy job will refuse to auto-apply a migration whose --pretend SQL contains a destructive statement -- if this is expected, it will need a manual, reviewed migrate run instead of the automated one."
+          fi
 
       - name: Confirm pinned PDF Studio build matches the shipped editor assets
         run: |
@@ -82,43 +115,92 @@ jobs:
             echo "::error::Pinned pdf-studio commit ($pinned) does not match synced asset manifest ($manifest) -- re-run scripts/sync-pdf-editor-assets.php"
             exit 1
           fi
+          test -d "public/vendor/pdf-editor/${manifest:0:12}/pdfjs/wasm" || { echo "::error::Pinned pdf-editor build is missing its pdfjs/wasm directory"; exit 1; }
+          test -d "public/vendor/pdf-editor/${manifest:0:12}/pdfjs/standard_fonts" || { echo "::error::Pinned pdf-editor build is missing its standard_fonts directory"; exit 1; }
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
 
-      - name: Install JS deps from the committed lockfile and build assets
+      - name: Install JS deps from the committed lockfile (fails if lockfile is stale) and build
         run: |
           npm ci
           npm run build
           test -f public/build/manifest.json
 
+      - name: Clean up the throwaway CI .env before packaging
+        run: rm -f .env /tmp/ci-migrate-check.sqlite
+
       - name: Package the deployable application (code + vendor/ + built assets)
         run: |
           # .env is explicitly excluded: it must never be shipped from CI and must
           # never overwrite the real production .env (APP_KEY, DB credentials, etc).
+          # storage/app/private and storage/logs are excluded: certificate PDFs,
+          # batch imports and logs are persistent production state, never shipped
+          # from or overwritten by a release.
           tar --exclude='.git' --exclude='node_modules' --exclude='tests' \
               --exclude='.env' --exclude='.env.*' \
-              --exclude='storage/app/private' --exclude='storage/logs' \
+              --exclude='storage/app/private' --exclude='storage/app/public' --exclude='storage/logs' \
+              --exclude='storage/framework/cache' --exclude='storage/framework/sessions' --exclude='storage/framework/views' \
               -czf /tmp/release.tar.gz .
+          sha256sum /tmp/release.tar.gz > /tmp/release.sha256
+
+      - name: Verify the release archive contains everything required
+        run: |
+          set -euo pipefail
+          manifest=$(mktemp)
+          tar -tzf /tmp/release.tar.gz > "$manifest"
+          required=(
+            "./artisan"
+            "./composer.json"
+            "./vendor/autoload.php"
+            "./public/index.php"
+            "./public/build/manifest.json"
+            "./public/vendor/pdf-editor/manifest.json"
+            "./config/pdf-studio.php"
+            "./database/migrations/"
+            "./bootstrap/app.php"
+          )
+          missing=0
+          for path in "${required[@]}"; do
+            if ! grep -qF "$path" "$manifest"; then
+              echo "::error::Release archive is missing required path: $path"
+              missing=1
+            fi
+          done
+          for forbidden in '^\./\.env$' '\./\.env\.' '^\./storage/app/private'; do
+            if grep -qE "$forbidden" "$manifest"; then
+              echo "::error::Release archive unexpectedly contains a forbidden path matching: $forbidden"
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ] || { echo "::error::Release archive failed content validation -- refusing to deploy it."; exit 1; }
+          echo "Release archive content check passed ($(wc -l < "$manifest") entries)."
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ github.sha }}
-          path: /tmp/release.tar.gz
+          path: |
+            /tmp/release.tar.gz
+            /tmp/release.sha256
           retention-days: 14
 
   deploy:
     needs: build-and-validate
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     environment: production
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ github.sha }}
           path: /tmp
+
+      - name: Verify downloaded artifact checksum
+        run: |
+          cd /tmp
+          sha256sum -c release.sha256
 
       - name: Establish a fingerprint-verified SSH connection
         id: ssh-setup
@@ -161,7 +243,7 @@ jobs:
           EOF
           chmod +x "$work_dir/scp.sh"
 
-      - name: Dry run -- read-only connectivity + lock check, no writes
+      - name: Dry run -- read-only connectivity, layout and lock inspection, no writes
         if: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
@@ -169,17 +251,31 @@ jobs:
           "$work_dir/ssh.sh" "
             set -e
             echo '--- whoami / tool versions ---'
-            whoami && php -v && git --version && composer --version
-            echo '--- target paths exist? ---'
-            test -d '${{ env.REMOTE_REPO_DIR }}' && echo 'repo dir OK' || echo 'repo dir MISSING'
+            whoami && php -v && git --version && composer --version && rsync --version | head -1
+            echo '--- releases/shared/current layout bootstrapped? ---'
+            test -d '${{ env.REMOTE_RELEASES }}' && echo 'releases/ OK' || echo 'releases/ MISSING -- run scripts/production-bootstrap.sh once (not performed by this workflow)'
+            test -f '${{ env.REMOTE_SHARED }}/.env' && echo 'shared/.env OK' || echo 'shared/.env MISSING'
+            test -d '${{ env.REMOTE_SHARED }}/storage' && echo 'shared/storage OK' || echo 'shared/storage MISSING'
+            if [ -L '${{ env.REMOTE_CURRENT }}' ]; then
+              echo \"current -> \$(readlink '${{ env.REMOTE_CURRENT }}')\"
+            else
+              echo 'current symlink MISSING -- NOT bootstrapped yet, a real deploy will refuse to run'
+            fi
+            echo '--- public_html ---'
             test -d '${{ env.REMOTE_PUBLIC_HTML }}' && echo 'public_html OK' || echo 'public_html MISSING'
-            test -f '${{ env.REMOTE_PUBLIC_HTML }}/index.php' && echo 'index.php present (will NOT be touched)' || echo 'index.php MISSING -- investigate before any real deploy'
+            test -f '${{ env.REMOTE_PUBLIC_HTML }}/index.php' && echo 'index.php present (will NOT be touched by a regular deploy)' || echo 'index.php MISSING -- investigate before any real deploy'
             echo '--- deploy lock currently held? ---'
-            if [ -d '${{ env.REMOTE_REPO_DIR }}/.deploy.lock' ]; then echo 'LOCK HELD -- a real deploy would wait/fail here'; else echo 'lock free'; fi
-            echo '--- current deployed commit ---'
-            git -C '${{ env.REMOTE_REPO_DIR }}' rev-parse HEAD 2>&1 || echo '(not yet a git checkout, or path missing)'
+            if [ -d '${{ env.REMOTE_BASE }}/.deploy.lock' ]; then
+              cat '${{ env.REMOTE_BASE }}/.deploy.lock/meta' 2>/dev/null || echo '(lock dir exists, no metadata file -- unusual)'
+            else
+              echo 'lock free'
+            fi
+            echo '--- current deployed commit (if bootstrapped) ---'
+            if [ -L '${{ env.REMOTE_CURRENT }}' ]; then
+              git -C \"\$(readlink -f '${{ env.REMOTE_CURRENT }}')\" rev-parse HEAD 2>&1 || echo '(current release is not a git checkout)'
+            fi
           "
-          echo "::notice::DRY RUN complete. No files were written and no services were restarted on production."
+          echo "::notice::DRY RUN complete. No files were written and nothing was restarted on production."
 
       - name: Real deploy
         if: ${{ !inputs.dry_run }}
@@ -190,53 +286,127 @@ jobs:
           work_dir="${{ steps.ssh-setup.outputs.work_dir }}"
           ssh_run() { "$work_dir/ssh.sh" "$@"; }
 
-          echo "--- acquiring deploy lock (fails loudly if one is already held) ---"
-          ssh_run "mkdir '${{ env.REMOTE_REPO_DIR }}/.deploy.lock' || { echo '::error::Another deployment is already in progress (lock held). Aborting.'; exit 1; }"
+          echo "--- preflight: refuse to run unless the releases/shared/current layout is bootstrapped ---"
+          ssh_run "
+            set -e
+            test -d '${{ env.REMOTE_RELEASES }}' || { echo '::error::${{ env.REMOTE_RELEASES }} does not exist -- run the one-time scripts/production-bootstrap.sh first.'; exit 1; }
+            test -f '${{ env.REMOTE_SHARED }}/.env' || { echo '::error::${{ env.REMOTE_SHARED }}/.env does not exist -- server is not bootstrapped.'; exit 1; }
+            test -d '${{ env.REMOTE_SHARED }}/storage' || { echo '::error::${{ env.REMOTE_SHARED }}/storage does not exist -- server is not bootstrapped.'; exit 1; }
+            test -L '${{ env.REMOTE_CURRENT }}' || { echo '::error::${{ env.REMOTE_CURRENT }} is not a symlink -- server is not bootstrapped.'; exit 1; }
+          "
 
-          # Always release the lock, whatever happens below.
-          cleanup() { ssh_run "rmdir '${{ env.REMOTE_REPO_DIR }}/.deploy.lock' 2>/dev/null || true"; }
+          echo "--- acquiring deploy lock, with stale-lock recovery ---"
+          ssh_run "
+            set -e
+            mkdir -p '${{ env.REMOTE_BASE }}'
+            if ! mkdir '${{ env.REMOTE_BASE }}/.deploy.lock' 2>/dev/null; then
+              now=\$(date +%s)
+              started=\$(grep -oE '^started_at=[0-9]+' '${{ env.REMOTE_BASE }}/.deploy.lock/meta' 2>/dev/null | cut -d= -f2 || echo 0)
+              age=\$(( now - started ))
+              if [ \"\$age\" -gt '${{ env.LOCK_STALE_SECONDS }}' ]; then
+                echo \"::warning::Found a deploy lock older than \$age seconds (run \$(cat '${{ env.REMOTE_BASE }}/.deploy.lock/meta' 2>/dev/null) ) -- treating as abandoned and reclaiming.\"
+                rm -rf '${{ env.REMOTE_BASE }}/.deploy.lock'
+                mkdir '${{ env.REMOTE_BASE }}/.deploy.lock'
+              else
+                echo '::error::Another deployment is in progress (lock age '\"\$age\"'s, under the '${{ env.LOCK_STALE_SECONDS }}'s staleness threshold). Aborting without touching anything.'
+                exit 1
+              fi
+            fi
+            printf 'run_id=${{ github.run_id }}\nstarted_at=%s\n' \"\$(date +%s)\" > '${{ env.REMOTE_BASE }}/.deploy.lock/meta'
+          "
+          cleanup() { ssh_run "rm -rf '${{ env.REMOTE_BASE }}/.deploy.lock' 2>/dev/null || true"; }
           trap cleanup EXIT
 
           echo "--- recording rollback point ---"
-          prev_sha="$(ssh_run "git -C '${{ env.REMOTE_REPO_DIR }}' rev-parse HEAD")"
-          echo "Previous deployed commit: $prev_sha"
-          ssh_run "cp -a '${{ env.REMOTE_PUBLIC_HTML }}'/build '${{ env.REMOTE_REPO_DIR }}'/.deploy.lock/build.bak 2>/dev/null || true"
+          prev_release="$(ssh_run "readlink '${{ env.REMOTE_CURRENT }}'")"
+          echo "Previous release: $prev_release"
+
+          echo "--- backing up current release + current public_html before any change ---"
+          backup_name="$(date -u +%Y%m%dT%H%M%SZ)-pre-$DEPLOY_SHA"
+          ssh_run "
+            set -e
+            mkdir -p '${{ env.REMOTE_BACKUPS }}'
+            tar -czf '${{ env.REMOTE_BACKUPS }}/$backup_name.tar.gz' -C '${{ env.REMOTE_PUBLIC_HTML }}' . 2>/dev/null || true
+          "
 
           echo "--- shipping release artifact ---"
           "$work_dir/scp.sh" /tmp/release.tar.gz "${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }}:/tmp/release-$DEPLOY_SHA.tar.gz"
 
           rollback() {
-            echo "::error::Deploy step failed -- rolling back to $prev_sha"
+            echo "::error::Deploy step failed -- rolling back to $prev_release"
             ssh_run "
               set -e
-              cd '${{ env.REMOTE_REPO_DIR }}'
-              git checkout --quiet --detach '$prev_sha'
-              composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --quiet
-              php artisan config:clear --quiet
-              php artisan config:cache --quiet
-              php artisan route:cache --quiet
-              php artisan view:cache --quiet
-              if [ -d .deploy.lock/build.bak ]; then rsync -a --delete .deploy.lock/build.bak/ '${{ env.REMOTE_PUBLIC_HTML }}/build/'; fi
+              ln -sfn '$prev_release' '${{ env.REMOTE_CURRENT }}.new'
+              mv -Tf '${{ env.REMOTE_CURRENT }}.new' '${{ env.REMOTE_CURRENT }}'
+              rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.well-known' \
+                \"\$(readlink -f '${{ env.REMOTE_CURRENT }}')\"/public/ '${{ env.REMOTE_PUBLIC_HTML }}/'
             "
-            echo "::error::Rollback to $prev_sha completed. Production is serving the previous release. This workflow run is FAILED, not succeeded -- investigate before retrying."
+            echo "::error::Rollback to $prev_release completed -- current symlink and public_html both reverted. This run is FAILED, not succeeded. The database was not touched by this rollback (see job summary for whether a migration ran before the failure)."
             exit 1
           }
 
-          echo "--- applying new release (never runs migrate/seed/destructive storage cleanup) ---"
+          echo "--- building new release in its own directory (old release keeps serving until activation) ---"
           ssh_run "
             set -e
-            cd '${{ env.REMOTE_REPO_DIR }}'
-            tar --exclude='.env' --exclude='.env.*' -xzf /tmp/release-$DEPLOY_SHA.tar.gz
+            release_dir='${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
+            rm -rf \"\$release_dir\"
+            mkdir -p \"\$release_dir\"
+            tar --exclude='.env' --exclude='.env.*' -xzf /tmp/release-$DEPLOY_SHA.tar.gz -C \"\$release_dir\"
             rm -f /tmp/release-$DEPLOY_SHA.tar.gz
-            test -f .env || { echo '::error::Production .env is missing after extraction -- aborting before any further step.'; exit 1; }
-            git checkout --quiet --detach '$DEPLOY_SHA'
+            ln -sfn '${{ env.REMOTE_SHARED }}/.env' \"\$release_dir/.env\"
+            ln -sfn '${{ env.REMOTE_SHARED }}/storage' \"\$release_dir/storage\"
+            test -f \"\$release_dir/.env\" || { echo '::error::Shared .env symlink did not resolve in the new release -- aborting before touching anything live.'; exit 1; }
+            cd \"\$release_dir\"
             composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --quiet
+            chmod -R ug+rwX bootstrap/cache
+          " || rollback
+
+          echo "--- validating pending migrations are non-destructive before applying ---"
+          ssh_run "
+            set -e
+            cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
+            pretend=\$(php artisan migrate --pretend 2>&1)
+            echo \"\$pretend\" | grep -iE 'drop |truncate |rename column' && {
+              echo '::error::A pending migration'\"'\"'s SQL contains DROP/TRUNCATE/RENAME COLUMN. Refusing to auto-apply it. Review and run it manually with a fresh DB backup, then re-run this deploy once the schema is already up to date (migrate --force will then no-op).'
+              exit 1
+            } || true
+          " || rollback
+
+          echo "--- backing up the database before migrating ---"
+          ssh_run "
+            set -e
+            cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
+            mkdir -p '${{ env.REMOTE_BACKUPS }}/../db'
+            db_name=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.database');\" 2>/dev/null | tail -1)
+            db_user=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.username');\" 2>/dev/null | tail -1)
+            db_pass=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.password');\" 2>/dev/null | tail -1)
+            db_host=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.host');\" 2>/dev/null | tail -1)
+            MYSQL_PWD=\"\$db_pass\" mysqldump -h \"\$db_host\" -u \"\$db_user\" \"\$db_name\" 2>/tmp/mysqldump.err \
+              | gzip > '${{ env.REMOTE_BACKUPS }}/../db/$backup_name.sql.gz' \
+              || { echo '::error::Database backup failed -- see /tmp/mysqldump.err on the server. Refusing to migrate without a fresh backup.'; cat /tmp/mysqldump.err; exit 1; }
+            rm -f /tmp/mysqldump.err
+          " || rollback
+
+          echo "--- applying migrations ---"
+          ssh_run "
+            set -e
+            cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
+            php artisan migrate --force
+          " || rollback
+
+          echo "--- caching + activating the new release atomically ---"
+          ssh_run "
+            set -e
+            cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
             php artisan config:clear --quiet
             php artisan config:cache --quiet
             php artisan route:cache --quiet
             php artisan view:cache --quiet
-            chmod -R ug+rwX storage bootstrap/cache
-            rsync -a --delete --exclude='index.php' public/ '${{ env.REMOTE_PUBLIC_HTML }}/'
+            cd '${{ env.REMOTE_BASE }}'
+            ln -sfn '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA' current.new
+            mv -Tf current.new current
+            rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.well-known' \
+              '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'/public/ '${{ env.REMOTE_PUBLIC_HTML }}/'
           " || rollback
 
           echo "--- smoke checks against production ---"
@@ -250,12 +420,19 @@ jobs:
           check "${{ env.PRODUCTION_URL }}/" 200 || smoke_ok=0
           check "${{ env.PRODUCTION_URL }}/admin/login" 200 || smoke_ok=0
           check "${{ env.PRODUCTION_URL }}/favicon.ico" 200 || smoke_ok=0
+          check "${{ env.PRODUCTION_URL }}/vendor/pdf-editor/manifest.json" 200 || smoke_ok=0
 
           if [ "$smoke_ok" != "1" ]; then
             rollback
           fi
 
-          echo "::notice::Deploy of $DEPLOY_SHA succeeded. Smoke checks passed. Previous commit was $prev_sha."
+          echo "--- pruning old releases (keep last 5; never touches shared/ or backups/) ---"
+          ssh_run "
+            cd '${{ env.REMOTE_RELEASES }}'
+            ls -1dt */ 2>/dev/null | tail -n +6 | xargs -r rm -rf --
+          "
+
+          echo "::notice::Deploy of $DEPLOY_SHA succeeded. Smoke checks passed. Previous release was $prev_release (kept, not deleted, for rollback)."
 
       - name: Clean up temporary SSH material
         if: always()
