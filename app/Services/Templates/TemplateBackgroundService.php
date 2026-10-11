@@ -8,12 +8,16 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
- * Stores the admin-uploaded Canva-exported PDF that a template's designer
- * renders as its background. Deliberately does not parse the PDF's page
- * dimensions server-side (no FPDI/Imagick dependency for that — see
- * docs/CERTIFICATE_SYSTEM.md §Background handling): the designer page
- * reads the real page size from the file itself via PDF.js in the browser,
- * and reports it back on save (`TemplateLayoutService::saveLayout()`).
+ * Stores the admin-uploaded "demo certificate" PDF supplied at
+ * template-creation time (PdfCertificatesController::store()) — the
+ * starting point PdfStudioController::show() preloads into a brand-new
+ * project (see docs/PDF_STUDIO_INTEGRATION.md's "PDF Certificates entry
+ * flow"). Deliberately does not parse the PDF's page dimensions server-side
+ * (no FPDI/Imagick dependency for that): the real page size is read from
+ * the file itself via PDF.js, inside the editor, once it's loaded there.
+ * Originally written for the old manual background/designer flow (removed
+ * in the admin workflow cleanup) — reused as-is here, same storage
+ * mechanics, new caller.
  */
 class TemplateBackgroundService
 {
