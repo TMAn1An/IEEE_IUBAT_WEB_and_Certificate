@@ -323,11 +323,15 @@ jobs:
 
           echo "--- backing up current release + current public_html before any change ---"
           backup_name="$(date -u +%Y%m%dT%H%M%SZ)-pre-$DEPLOY_SHA"
+          # A failed backup here must abort the whole deploy -- it is the only copy of
+          # public_html's state before this run touches anything. No `|| true`.
           ssh_run "
             set -e
             mkdir -p '${{ env.REMOTE_BACKUPS }}'
-            tar -czf '${{ env.REMOTE_BACKUPS }}/$backup_name.tar.gz' -C '${{ env.REMOTE_PUBLIC_HTML }}' . 2>/dev/null || true
-          "
+            tar -czf '${{ env.REMOTE_BACKUPS }}/$backup_name.tar.gz' -C '${{ env.REMOTE_PUBLIC_HTML }}' .
+            test -s '${{ env.REMOTE_BACKUPS }}/$backup_name.tar.gz' || { echo '::error::public_html backup archive is empty or missing -- aborting before touching anything.'; exit 1; }
+            tar -tzf '${{ env.REMOTE_BACKUPS }}/$backup_name.tar.gz' >/dev/null || { echo '::error::public_html backup archive failed integrity check -- aborting.'; exit 1; }
+          " || { echo "::error::public_html backup failed. Deploy aborted before any change was made to production."; exit 1; }
 
           echo "--- shipping release artifact ---"
           "$work_dir/scp.sh" /tmp/release.tar.gz "${{ secrets.CPANEL_USER }}@${{ secrets.CPANEL_HOST }}:/tmp/release-$DEPLOY_SHA.tar.gz"
@@ -338,10 +342,10 @@ jobs:
               set -e
               ln -sfn '$prev_release' '${{ env.REMOTE_CURRENT }}.new'
               mv -Tf '${{ env.REMOTE_CURRENT }}.new' '${{ env.REMOTE_CURRENT }}'
-              rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.well-known' \
+              rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.htpasswd' --exclude='.well-known' --exclude='cgi-bin' --exclude='error_log' --exclude='.user.ini' \
                 \"\$(readlink -f '${{ env.REMOTE_CURRENT }}')\"/public/ '${{ env.REMOTE_PUBLIC_HTML }}/'
             "
-            echo "::error::Rollback to $prev_release completed -- current symlink and public_html both reverted. This run is FAILED, not succeeded. The database was not touched by this rollback (see job summary for whether a migration ran before the failure)."
+            echo "::error::Rollback to $prev_release completed -- current symlink and public_html both reverted. This run is FAILED, not succeeded. Migrations are NEVER rolled back automatically: if 'applying migrations' had already run and succeeded before this failure, the schema stays at the new version even though the code just reverted (migrations are written forward-compatible so the previous release's code should still run against it). If a migration itself is what failed, backups/db/$backup_name.sql.gz (taken immediately before migrate --force) is the restore point -- that restore is a manual DBA action, never automatic."
             exit 1
           }
 
@@ -374,17 +378,36 @@ jobs:
 
           echo "--- backing up the database before migrating ---"
           ssh_run "
-            set -e
+            set -eo pipefail
             cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
             mkdir -p '${{ env.REMOTE_BACKUPS }}/../db'
             db_name=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.database');\" 2>/dev/null | tail -1)
             db_user=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.username');\" 2>/dev/null | tail -1)
             db_pass=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.password');\" 2>/dev/null | tail -1)
             db_host=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.host');\" 2>/dev/null | tail -1)
-            MYSQL_PWD=\"\$db_pass\" mysqldump -h \"\$db_host\" -u \"\$db_user\" \"\$db_name\" 2>/tmp/mysqldump.err \
-              | gzip > '${{ env.REMOTE_BACKUPS }}/../db/$backup_name.sql.gz' \
-              || { echo '::error::Database backup failed -- see /tmp/mysqldump.err on the server. Refusing to migrate without a fresh backup.'; cat /tmp/mysqldump.err; exit 1; }
+            dump_path='${{ env.REMOTE_BACKUPS }}/../db/$backup_name.sql.gz'
+            # set -o pipefail above is required here: in `mysqldump | gzip`, bash's exit
+            # status for the pipeline is otherwise only gzip's -- a failed mysqldump
+            # piped into a gzip that happily compresses zero bytes would look like
+            # success without pipefail, leaving a corrupt/empty 'backup' on disk.
+            if ! MYSQL_PWD=\"\$db_pass\" mysqldump -h \"\$db_host\" -u \"\$db_user\" \"\$db_name\" 2>/tmp/mysqldump.err | gzip > \"\$dump_path\"; then
+              echo '::error::Database backup failed -- see captured stderr below. Refusing to migrate without a verified fresh backup.'
+              cat /tmp/mysqldump.err
+              rm -f \"\$dump_path\"
+              exit 1
+            fi
+            # Verify the backup is both a valid gzip stream and contains actual SQL, not
+            # just an empty/truncated file that would pass a bare existence check.
+            if ! gzip -t \"\$dump_path\"; then
+              echo '::error::Database backup file failed gzip integrity check -- refusing to migrate.'
+              exit 1
+            fi
+            if ! zcat \"\$dump_path\" | grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE'; then
+              echo '::error::Database backup does not look like a real SQL dump (no CREATE TABLE / dump header found) -- refusing to migrate without a verified backup.'
+              exit 1
+            fi
             rm -f /tmp/mysqldump.err
+            echo \"Database backup verified: \$dump_path (\$(du -h \"\$dump_path\" | cut -f1))\"
           " || rollback
 
           echo "--- applying migrations ---"
@@ -405,7 +428,7 @@ jobs:
             cd '${{ env.REMOTE_BASE }}'
             ln -sfn '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA' current.new
             mv -Tf current.new current
-            rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.well-known' \
+            rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.htpasswd' --exclude='.well-known' --exclude='cgi-bin' --exclude='error_log' --exclude='.user.ini' \
               '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'/public/ '${{ env.REMOTE_PUBLIC_HTML }}/'
           " || rollback
 
@@ -426,10 +449,18 @@ jobs:
             rollback
           fi
 
-          echo "--- pruning old releases (keep last 5; never touches shared/ or backups/) ---"
+          echo "--- pruning old releases (keep last 5; never touches shared/, backups/, the active release, or the rollback target) ---"
           ssh_run "
+            set -e
             cd '${{ env.REMOTE_RELEASES }}'
-            ls -1dt */ 2>/dev/null | tail -n +6 | xargs -r rm -rf --
+            active=\$(basename \"\$(readlink -f '${{ env.REMOTE_CURRENT }}')\")
+            rollback_target=\$(basename '$prev_release')
+            ls -1dt */ 2>/dev/null \
+              | sed 's:/\$::' \
+              | grep -vxF \"\$active\" \
+              | grep -vxF \"\$rollback_target\" \
+              | tail -n +4 \
+              | xargs -r -I{} rm -rf -- '{}'
           "
 
           echo "::notice::Deploy of $DEPLOY_SHA succeeded. Smoke checks passed. Previous release was $prev_release (kept, not deleted, for rollback)."

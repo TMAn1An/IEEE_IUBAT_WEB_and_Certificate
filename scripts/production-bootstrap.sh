@@ -4,11 +4,23 @@
 # that .github/workflows/deploy-production.yml expects.
 #
 # This is NOT run automatically by any workflow. Run it once, manually, over
-# SSH, with a human watching, after confirming a fresh backup exists. It is
-# designed to be safe to re-run (idempotent) if interrupted, and it never
-# deletes the original repositories/ieee-web checkout -- that stays in place
-# as a fallback until you've verified the new layout serves traffic
-# correctly, and can be removed manually afterwards.
+# SSH, with a human watching, after confirming a fresh backup exists.
+#
+# Safe to re-run if interrupted (idempotent), including after a killed SSH
+# session mid-copy:
+#   - The .env/storage move only commits (via `mv`) after verifying the copy
+#     into shared/ is byte-identical to the source, so a crash between copy
+#     and move can't leave a half-written shared/ file silently "done".
+#   - If shared/.env or shared/storage already exist from a previous partial
+#     run, their content is compared against the source before either being
+#     reused (identical) or raising an error that requires a human decision
+#     (different) -- never silently overwritten.
+#   - The initial release is always rsync'd (rsync itself resumes/completes
+#     a partial copy) and only activated via the `current` symlink after
+#     verifying artisan, vendor/autoload.php and public/index.php are all
+#     present in it -- an interrupted copy can never get activated.
+#   - It never deletes the original repositories/ieee-web checkout -- that
+#     stays in place as a fallback until manually removed later.
 #
 # What it does, in order:
 #   1. Creates releases/, shared/, and backups/ if missing.
@@ -17,7 +29,8 @@
 #      working untouched during the transition.
 #   3. Creates releases/<current-head-sha>/ as a copy of the current
 #      checkout (not a move), symlinks its .env/storage to shared/.
-#   4. Creates the `current` symlink pointing at that release.
+#   4. Creates the `current` symlink pointing at that release, only after
+#      verifying the release is complete.
 #   5. Edits public_html/index.php's absolute bootstrap paths from
 #      repositories/ieee-web to current -- after taking a timestamped
 #      backup copy, and only if the expected path string is found verbatim
@@ -47,37 +60,31 @@ read -r -p "Have you taken a fresh full backup (files + database) in the last ho
 
 mkdir -p "$RELEASES" "$SHARED" "$BACKUPS"
 
-echo "--- Moving .env and storage/ into shared/ (if not already done) ---"
-if [ -f "$OLD_REPO/.env" ] && [ ! -L "$OLD_REPO/.env" ]; then
-  cp -a "$OLD_REPO/.env" "$SHARED/.env"
-  mv "$OLD_REPO/.env" "$BACKUPS/.env.pre-bootstrap"
-  ln -s "$SHARED/.env" "$OLD_REPO/.env"
-  echo "moved .env -> shared/, symlinked back"
-else
-  echo ".env already a symlink or missing, skipping"
-fi
+# shellcheck source=lib/move-into-shared.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/move-into-shared.sh"
 
-if [ -d "$OLD_REPO/storage" ] && [ ! -L "$OLD_REPO/storage" ]; then
-  cp -a "$OLD_REPO/storage" "$SHARED/storage"
-  mv "$OLD_REPO/storage" "$BACKUPS/storage.pre-bootstrap"
-  ln -s "$SHARED/storage" "$OLD_REPO/storage"
-  echo "moved storage/ -> shared/, symlinked back"
-else
-  echo "storage/ already a symlink or missing, skipping"
-fi
+echo "--- Moving .env and storage/ into shared/ (if not already done) ---"
+move_into_shared "$OLD_REPO/.env" "$SHARED/.env" ".env" "$BACKUPS/.env.pre-bootstrap"
+move_into_shared "$OLD_REPO/storage" "$SHARED/storage" "storage/" "$BACKUPS/storage.pre-bootstrap"
 
 HEAD_SHA="$(git -C "$OLD_REPO" rev-parse HEAD)"
 RELEASE_DIR="$RELEASES/$HEAD_SHA"
 
-echo "--- Creating initial release $HEAD_SHA (copy, not move) ---"
-if [ ! -d "$RELEASE_DIR" ]; then
-  rsync -a --exclude='.env' --exclude='storage' "$OLD_REPO/" "$RELEASE_DIR/"
-  ln -sfn "$SHARED/.env" "$RELEASE_DIR/.env"
-  ln -sfn "$SHARED/storage" "$RELEASE_DIR/storage"
-  echo "created $RELEASE_DIR"
-else
-  echo "$RELEASE_DIR already exists, skipping copy"
-fi
+echo "--- Creating initial release $HEAD_SHA (copy, not move; rsync resumes if interrupted before) ---"
+mkdir -p "$RELEASE_DIR"
+rsync -a --exclude='.env' --exclude='storage' "$OLD_REPO/" "$RELEASE_DIR/"
+ln -sfn "$SHARED/.env" "$RELEASE_DIR/.env"
+ln -sfn "$SHARED/storage" "$RELEASE_DIR/storage"
+
+echo "--- Verifying the release is complete before activating it ---"
+for required in artisan vendor/autoload.php public/index.php composer.json; do
+  if [ ! -e "$RELEASE_DIR/$required" ]; then
+    echo "ERROR: $RELEASE_DIR/$required is missing -- the copy is incomplete. NOT activating current."
+    echo "Re-run this script to resume the copy (rsync will pick up where it left off)."
+    exit 1
+  fi
+done
+echo "release verified complete"
 
 echo "--- Activating current symlink ---"
 ln -sfn "$RELEASE_DIR" "$CURRENT.new"
