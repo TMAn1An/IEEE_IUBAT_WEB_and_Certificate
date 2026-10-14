@@ -429,11 +429,26 @@ jobs:
           ssh_run "
             set -e
             cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
-            pretend=\$(php artisan migrate --pretend 2>&1)
-            echo \"\$pretend\" | grep -iE 'drop |truncate |rename column' && {
+            # --force is required: APP_ENV=production makes Laravel's
+            # ConfirmableTrait ask an interactive 'Are you sure you want to run
+            # this command? (yes/no)' before even a --pretend run, and GitHub
+            # Actions has no stdin to answer it -- the previous version of this
+            # step (no --force) hung on that prompt until it failed, with the
+            # real reason never visible because 'set -e' killed the script at
+            # the \\\$(...) assignment before any echo ran. --pretend stays
+            # mandatory: --force only skips the confirmation prompt, it never
+            # makes --pretend apply anything -- --pretend always just prints
+            # the SQL regardless of --force.
+            if ! pretend_output=\$(php artisan migrate --pretend --force 2>&1); then
+              echo '::error::php artisan migrate --pretend --force failed -- aborting before anything is touched. Output below (Laravel'\"'\"'s own diagnostic output; contains no secrets -- no .env values or credentials are ever printed by migrate --pretend):'
+              echo \"\$pretend_output\"
+              exit 1
+            fi
+            if echo \"\$pretend_output\" | grep -iE 'drop |truncate |rename column'; then
               echo '::error::A pending migration'\"'\"'s SQL contains DROP/TRUNCATE/RENAME COLUMN. Refusing to auto-apply it. Review and run it manually with a fresh DB backup, then re-run this deploy once the schema is already up to date (migrate --force will then no-op).'
               exit 1
-            } || true
+            fi
+            echo \"\$pretend_output\"
           " || rollback
 
           echo "--- backing up the database before migrating ---"
