@@ -330,6 +330,321 @@ EOF
   rm -f /tmp/out.$$
 }
 
+# --- regression for run 38638058559: a bare backtick pair inside a
+# double-quoted multi-line bash string is NOT an inert comment to the shell
+# that is PARSING that string (the GitHub Actions runner, building the
+# command it hands to ssh_run) -- it is live command substitution, executed
+# right then and there, comment or not. This is what actually broke that
+# deploy: a comment on the "backing up the database" step read `in
+# `mysqldump | gzip`,` with unescaped backticks, so the runner executed the
+# literal text "mysqldump | gzip" as a real command while building the
+# string, spliced gzip's null-byte-laden binary output into it, and
+# corrupted everything after -- surfacing on the remote end as exactly the
+# reported "command substitution: ignored null byte in input" warning
+# followed by a syntax error near an orphaned ')'.
+test_unescaped_backtick_in_doublequoted_string_executes_locally() {
+  local d="$1"
+  local marker="$d/marker"
+  rm -f "$marker"
+  (
+    # Deliberately bare/unescaped backticks below -- this reproduces the
+    # exact bug, not the fix. Do not add backslashes here.
+    x="before
+# comment with `touch $marker` unescaped backtick
+after"
+    echo "$x" >/dev/null
+  )
+  if [ -f "$marker" ]; then
+    ok "control case: an unescaped backtick pair inside a double-quoted string executes as command substitution even though it looks like a comment (confirms the real root cause of run 38638058559)"
+  else
+    bad "expected the unescaped-backtick control case to execute its payload, but it didn't -- control case is no longer valid"
+  fi
+}
+
+# --- the fix: backslash-escaping the backtick pair neutralizes it for this
+# parse, and the comment is harmless either way once it reaches a remote
+# shell (a '#' comment consumes the rest of its line unconditionally there
+# too) -- this mirrors the exact escaping used in the real workflow fix. ---
+test_escaped_backtick_in_doublequoted_string_is_inert() {
+  local d="$1"
+  local marker="$d/marker"
+  rm -f "$marker"
+  (
+    x="before
+# comment with \`touch $marker\` escaped backtick
+after"
+    echo "$x" >/dev/null
+  )
+  if [ ! -f "$marker" ]; then
+    ok "escaping the backtick pair (backslash-backtick) prevents the local command substitution that caused run 38638058559"
+  else
+    bad "escaped backtick still executed its payload -- the fix did not neutralize it"
+  fi
+}
+
+# --- write-db-backup-option-file.php: a password containing shell
+# metacharacters (quotes, backslash, \$, parentheses, spaces) must round-trip
+# through the option file byte-for-byte, and must never appear on a command
+# line or in this test's own captured stdout (only the db name may). ---
+test_option_file_handles_special_character_password() {
+  local d="$1"
+  mkdir -p "$d/release"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD="p@ss\"w'ord\\with\$special(chars) and spaces"
+DB_HOST=127.0.0.1
+DB_PORT=3306
+ENVEOF
+
+  local option_file="$d/opt.cnf"
+  local db_name
+  if ! db_name=$(php "$ROOT/scripts/deploy/write-db-backup-option-file.php" "$option_file" "$d/release" 2>"$d/stderr.log"); then
+    bad "write-db-backup-option-file.php failed for a special-character password: $(cat "$d/stderr.log")"
+    return
+  fi
+
+  local perms
+  perms="$(stat -c '%a' "$option_file")"
+
+  # Reverse the escaping independently (in Python, not reusing the subject's
+  # own PHP escaping function) to confirm the password round-trips exactly,
+  # and that stdout never carried anything but the database name.
+  if [ "$perms" = "600" ] && [ "$db_name" = "ieee_prod" ] && python3 - "$option_file" <<'PYEOF'
+import re, sys
+content = open(sys.argv[1]).read()
+m = re.search(r'^password="((?:[^"\\]|\\.)*)"$', content, re.M)
+assert m, "password line not found or malformed: " + content
+unescaped = m.group(1).replace('\\"', '"').replace('\\\\', '\\')
+expected = 'p@ss"w\'ord\\with$special(chars) and spaces'
+assert unescaped == expected, f"{unescaped!r} != {expected!r}"
+PYEOF
+  then
+    ok "a password containing quotes, backslash, \$, parentheses and spaces round-trips exactly through the chmod-600 option file, with only the db name on stdout"
+  else
+    bad "special-character password did not round-trip correctly (perms=$perms db_name=$db_name)"
+  fi
+}
+
+# --- write-db-backup-option-file.php: empty DB_PASSWORD is a legitimate
+# (if unusual) credential and must still produce a usable option file, not
+# an error -- only a missing/empty DB_DATABASE or DB_USERNAME should fail. ---
+test_option_file_allows_empty_password() {
+  local d="$1"
+  mkdir -p "$d/release"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD=
+ENVEOF
+
+  local option_file="$d/opt.cnf"
+  local db_name
+  if db_name=$(php "$ROOT/scripts/deploy/write-db-backup-option-file.php" "$option_file" "$d/release" 2>"$d/stderr.log") \
+     && [ "$db_name" = "ieee_prod" ] \
+     && grep -q '^password=""$' "$option_file"; then
+    ok "an empty DB_PASSWORD is accepted and written as an empty quoted value, not treated as an error"
+  else
+    bad "empty DB_PASSWORD was not handled correctly: $(cat "$d/stderr.log" 2>/dev/null) db_name=$db_name"
+  fi
+}
+
+# --- write-db-backup-option-file.php: empty DB_DATABASE must fail closed,
+# with no option file (which could carry a password) left behind. ---
+test_option_file_rejects_empty_database_name() {
+  local d="$1"
+  mkdir -p "$d/release"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+
+  local option_file="$d/opt.cnf"
+  rm -f "$option_file"
+  if php "$ROOT/scripts/deploy/write-db-backup-option-file.php" "$option_file" "$d/release" >"$d/stdout.log" 2>"$d/stderr.log"; then
+    bad "expected an empty DB_DATABASE to fail, but the script succeeded"
+  elif [ -f "$option_file" ]; then
+    bad "an empty DB_DATABASE failed as expected, but still left an option file (possibly containing a password) behind"
+  elif grep -qi 'password\|secret' "$d/stdout.log" "$d/stderr.log"; then
+    bad "credential value leaked into stdout/stderr on failure"
+  else
+    ok "an empty DB_DATABASE is rejected before any option file is written, with no credential value logged"
+  fi
+}
+
+# --- full DB-backup step, reproduced from .github/workflows/deploy-production.yml's
+# "backing up the database before migrating" block (kept in sync by hand with
+# that embedded step, since it runs on the remote server over SSH and can't
+# source a local file) -- exercised against fake mysqldump binaries so each
+# outcome can be tested without a real database. ---
+run_db_backup() {
+  local release_dir="$1" dump_path="$2"
+  (
+    set -eo pipefail
+    option_file="$(mktemp)"
+    cleanup_option_file() { rm -f "$option_file"; }
+    trap cleanup_option_file EXIT
+    chmod 600 "$option_file"
+    if ! db_name=$(php "$ROOT/scripts/deploy/write-db-backup-option-file.php" "$option_file" "$release_dir"); then
+      echo "ERROR: could not prepare database credentials for backup"
+      exit 1
+    fi
+    if ! mysqldump --defaults-extra-file="$option_file" "$db_name" 2>"$release_dir/mysqldump.err" | gzip > "$dump_path"; then
+      echo "ERROR: database backup failed"
+      cat "$release_dir/mysqldump.err"
+      rm -f "$dump_path"
+      exit 1
+    fi
+    if ! gzip -t "$dump_path"; then
+      echo "ERROR: database backup file failed gzip integrity check"
+      exit 1
+    fi
+    if ! zcat "$dump_path" | grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE'; then
+      echo "ERROR: database backup does not look like a real SQL dump"
+      exit 1
+    fi
+    if ! zcat "$dump_path" | grep -qE 'CREATE TABLE .migrations.|CREATE TABLE .certificates.'; then
+      echo "ERROR: database backup does not contain this application's tables"
+      exit 1
+    fi
+    echo "Database backup verified: $dump_path"
+  )
+}
+
+test_db_backup_succeeds_with_valid_laravel_dump() {
+  local d="$1"
+  mkdir -p "$d/release" "$d/bin"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+  cat > "$d/bin/mysqldump" <<'EOF'
+#!/bin/bash
+echo "-- MySQL dump"
+echo 'CREATE TABLE `migrations` (id INT);'
+echo 'CREATE TABLE `certificates` (id INT);'
+EOF
+  chmod +x "$d/bin/mysqldump"
+
+  if PATH="$d/bin:$PATH" run_db_backup "$d/release" "$d/dump.sql.gz" >"$d/out.log" 2>&1 \
+     && gzip -t "$d/dump.sql.gz"; then
+    ok "a valid Laravel-schema dump passes every check and produces a verified backup"
+  else
+    bad "a valid Laravel-schema dump was unexpectedly rejected: $(cat "$d/out.log")"
+  fi
+}
+
+test_db_backup_fails_closed_on_connection_failure() {
+  local d="$1"
+  mkdir -p "$d/release" "$d/bin"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+  cat > "$d/bin/mysqldump" <<'EOF'
+#!/bin/bash
+echo "mysqldump: Got error: 2002: Connection refused" >&2
+exit 1
+EOF
+  chmod +x "$d/bin/mysqldump"
+  rm -f "$d/dump.sql.gz"
+
+  if PATH="$d/bin:$PATH" run_db_backup "$d/release" "$d/dump.sql.gz" >"$d/out.log" 2>&1; then
+    bad "a failed database connection should have aborted the backup, but it reported success"
+  elif [ -f "$d/dump.sql.gz" ]; then
+    bad "a failed connection left a (corrupt/empty) backup file behind instead of cleaning it up"
+  elif ! grep -q "Connection refused" "$d/out.log"; then
+    bad "the connection failure's diagnostic did not reach the deploy log"
+  else
+    ok "a database connection failure aborts the backup, cleans up the dump file, and surfaces the real diagnostic"
+  fi
+}
+
+test_db_backup_fails_closed_on_generic_mysqldump_failure() {
+  local d="$1"
+  mkdir -p "$d/release" "$d/bin"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+  cat > "$d/bin/mysqldump" <<'EOF'
+#!/bin/bash
+echo "mysqldump: unknown table" >&2
+exit 2
+EOF
+  chmod +x "$d/bin/mysqldump"
+  rm -f "$d/dump.sql.gz"
+
+  if PATH="$d/bin:$PATH" run_db_backup "$d/release" "$d/dump.sql.gz" >"$d/out.log" 2>&1; then
+    bad "a generic mysqldump failure should have aborted the backup, but it reported success"
+  else
+    ok "a generic mysqldump failure (pipefail catches it through the gzip pipe) aborts the backup"
+  fi
+}
+
+test_db_backup_rejects_invalid_backup_file() {
+  local d="$1"
+  mkdir -p "$d/release" "$d/bin"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+  # mysqldump exits 0 but prints nothing resembling a SQL dump -- e.g. a
+  # misconfigured client silently producing an empty/garbage result.
+  cat > "$d/bin/mysqldump" <<'EOF'
+#!/bin/bash
+echo "not a real dump, just some garbage text"
+EOF
+  chmod +x "$d/bin/mysqldump"
+  rm -f "$d/dump.sql.gz"
+
+  if PATH="$d/bin:$PATH" run_db_backup "$d/release" "$d/dump.sql.gz" >"$d/out.log" 2>&1; then
+    bad "a backup file with no SQL dump header/CREATE TABLE should have been rejected, but it passed"
+  else
+    ok "a backup file that doesn't look like a real SQL dump is rejected even though mysqldump exited 0"
+  fi
+}
+
+test_db_backup_rejects_wrong_database() {
+  local d="$1"
+  mkdir -p "$d/release" "$d/bin"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=wrong_db
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+  # A real SQL dump, but from the legacy WordPress database, not this app's
+  # Laravel schema -- requirement: confirm the backup is the intended
+  # database, not just that it looks like SOME valid SQL dump.
+  cat > "$d/bin/mysqldump" <<'EOF'
+#!/bin/bash
+echo "-- MySQL dump"
+echo 'CREATE TABLE `wp_posts` (id INT);'
+echo 'CREATE TABLE `wp_options` (id INT);'
+EOF
+  chmod +x "$d/bin/mysqldump"
+  rm -f "$d/dump.sql.gz"
+
+  if PATH="$d/bin:$PATH" run_db_backup "$d/release" "$d/dump.sql.gz" >"$d/out.log" 2>&1; then
+    bad "a dump containing only legacy WordPress tables should have been rejected, but it passed"
+  else
+    ok "a valid-looking SQL dump that lacks this application's tables (migrations/certificates) is rejected -- catches a wrong-database misconfiguration"
+  fi
+}
+
 run() {
   local name="$1"
   with_tmp "test_$name"
@@ -348,6 +663,16 @@ run storage_symlink_replaces_existing_real_directory
 run plain_ln_sfn_nests_symlink_inside_existing_directory
 run storage_symlink_idempotent_when_already_correct
 run migrate_pretend_check_logic
+run unescaped_backtick_in_doublequoted_string_executes_locally
+run escaped_backtick_in_doublequoted_string_is_inert
+run option_file_handles_special_character_password
+run option_file_allows_empty_password
+run option_file_rejects_empty_database_name
+run db_backup_succeeds_with_valid_laravel_dump
+run db_backup_fails_closed_on_connection_failure
+run db_backup_fails_closed_on_generic_mysqldump_failure
+run db_backup_rejects_invalid_backup_file
+run db_backup_rejects_wrong_database
 
 echo
 echo "$pass passed, $fail failed"
