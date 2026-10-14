@@ -3,6 +3,40 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## Second real production deploy dispatch failed; migrate --pretend needed --force (2026-10-14)
+
+- A second controlled `workflow_dispatch` (dry_run: false) against `main` (commit
+  `650e57ab76d2b719b06252b99bb7e87333a9c3ed`) — GitHub Actions run `38634232554` — got past the
+  storage/.env symlink fix cleanly (`Shared .env and storage symlinks verified...`, Composer
+  install + `package:discover` both succeeded), then failed at "validating pending migrations are
+  non-destructive before applying".
+- **Root cause**: that step ran `php artisan migrate --pretend` without `--force`. With
+  `APP_ENV=production`, Laravel's `ConfirmableTrait` asks an interactive "Are you sure you want to
+  run this command? (yes/no)" before running *any* artisan command covered by it — including
+  `--pretend`, which only controls whether migrations are actually applied, not whether the
+  confirmation prompt appears. GitHub Actions has no stdin to answer that prompt, so the command
+  immediately printed "Command cancelled" and exited non-zero. Manually reproducing
+  `php artisan migrate --pretend` on the production server (answering "Yes" by hand) showed the
+  prompt directly. A second, compounding bug: the script's `pretend=$(...)` assignment had no
+  failure handling, so `set -e` killed the whole step the instant that command failed -- the
+  captured output (which would have shown the real reason) was never printed anywhere, only a
+  generic "Process completed with exit code 1" reached the log.
+- The workflow's rollback worked correctly again: production stayed on
+  `af136e19a75304d0f021902d66e2a526d4baaf06` throughout, nothing was migrated or otherwise changed
+  on the live database/storage.
+- **Fix**: `migrate --pretend --force`. `--pretend` stays mandatory and still always just prints
+  SQL -- `--force` only skips the interactive confirmation prompt, it does not change what
+  `--pretend` does (verified directly: running `migrate --pretend --force` against a disposable
+  database with `APP_ENV=production` and no stdin succeeds and leaves the database schema-free
+  afterward). The destructive-migration grep check is unchanged. A failed `migrate --pretend
+  --force` now prints its full captured output before aborting, instead of disappearing into a
+  dead command substitution.
+- Added 3 new tests to `tests/deploy/test-deploy-safety.sh` (now 15/15 passing) against fake `php`
+  binaries: one reproducing the exact ConfirmableTrait-cancellation bug (passes with `--force`,
+  fails without), one confirming a real failure's diagnostic reaches the log, one confirming
+  destructive-migration detection still blocks a `DROP TABLE`. Full Laravel suite still 178/178.
+  No application behavior, certificate records, PDF files, or database schema changed by this fix.
+
 ## First real production deploy dispatch failed; storage/.env symlink bug fixed (2026-10-14)
 
 - A controlled `workflow_dispatch` (dry_run: false) of `deploy-production.yml` against `main`

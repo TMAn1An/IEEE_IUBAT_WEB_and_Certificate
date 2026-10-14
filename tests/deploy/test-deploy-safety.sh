@@ -241,6 +241,95 @@ test_storage_symlink_idempotent_when_already_correct() {
   fi
 }
 
+# --- migrate --pretend pre-check: regression for run 38634232554 ---
+# This reproduces the deploy workflow's migration-pretend-check block logic
+# (kept in sync by hand with .github/workflows/deploy-production.yml's
+# "validating pending migrations are non-destructive" step, since that step
+# runs on the remote server over SSH and can't source a local file) against
+# fake `php` binaries, to check all three outcomes without a real Laravel
+# install or database.
+run_pretend_check() {
+  local php_bin="$1"
+  PATH="$php_bin:$PATH" bash -c '
+    set -e
+    if ! pretend_output=$(php artisan migrate --pretend --force 2>&1); then
+      echo "ERROR: php artisan migrate --pretend --force failed -- output below:"
+      echo "$pretend_output"
+      exit 1
+    fi
+    if echo "$pretend_output" | grep -iE "drop |truncate |rename column"; then
+      echo "ERROR: destructive SQL detected, refusing to auto-apply"
+      exit 1
+    fi
+    echo "$pretend_output"
+  '
+}
+
+test_migrate_pretend_check_logic() {
+  local d="$1"
+
+  # Case 1: --force is what makes this work non-interactively at all. A fake
+  # `php` that reproduces Laravel's ConfirmableTrait behavior: cancels
+  # (non-zero exit, "Command cancelled") unless --force is present in its
+  # arguments -- this is exactly what broke run 38634232554 before this fix.
+  mkdir -p "$d/bin-confirmable"
+  cat > "$d/bin-confirmable/php" <<'EOF'
+#!/bin/bash
+if [[ "$*" == *"--force"* ]]; then
+  echo "INFO Nothing to migrate."
+  exit 0
+else
+  echo "APPLICATION IN PRODUCTION."
+  echo "WARN  Command cancelled."
+  exit 1
+fi
+EOF
+  chmod +x "$d/bin-confirmable/php"
+  if run_pretend_check "$d/bin-confirmable" >/tmp/out.$$ 2>&1; then
+    ok "migrate --pretend --force succeeds non-interactively against a Laravel ConfirmableTrait-style prompt (the exact production failure this fixes)"
+  else
+    bad "migrate --pretend --force still fails against a confirmable-style prompt: $(cat /tmp/out.$$)"
+  fi
+  rm -f /tmp/out.$$
+
+  # Case 2: a real failure's diagnostic must reach stdout, not be swallowed
+  # by the $(...) command substitution (requirement: failures must print a
+  # useful diagnostic, not hide it) -- this was the second half of the same
+  # bug: the original script's `pretend=$(...)` had no failure handling at
+  # all, so `set -e` killed the script silently right there.
+  mkdir -p "$d/bin-broken"
+  cat > "$d/bin-broken/php" <<'EOF'
+#!/bin/bash
+echo "SQLSTATE[HY000] [2002] Connection refused" >&2
+exit 1
+EOF
+  chmod +x "$d/bin-broken/php"
+  output=$(run_pretend_check "$d/bin-broken" 2>&1) && status=0 || status=$?
+  if [ "$status" != "0" ] && echo "$output" | grep -q "Connection refused"; then
+    ok "a real migrate --pretend failure's diagnostic output reaches the log instead of being silently swallowed"
+  else
+    bad "failure diagnostic was not surfaced: status=$status output=$output"
+  fi
+
+  # Case 3: --pretend stays mandatory -- destructive-migration detection
+  # (DROP/TRUNCATE/RENAME COLUMN) must still block, using the same output
+  # --force successfully produced.
+  mkdir -p "$d/bin-destructive"
+  cat > "$d/bin-destructive/php" <<'EOF'
+#!/bin/bash
+echo "2026_01_01_000000_drop_stuff"
+echo "  drop table \"old_table\""
+exit 0
+EOF
+  chmod +x "$d/bin-destructive/php"
+  if run_pretend_check "$d/bin-destructive" >/tmp/out.$$ 2>&1; then
+    bad "destructive SQL (drop table) should have been blocked, but the check passed"
+  else
+    ok "destructive-migration detection still blocks a DROP in the --pretend --force output"
+  fi
+  rm -f /tmp/out.$$
+}
+
 run() {
   local name="$1"
   with_tmp "test_$name"
@@ -258,6 +347,7 @@ run pruning_protects_active_and_rollback
 run storage_symlink_replaces_existing_real_directory
 run plain_ln_sfn_nests_symlink_inside_existing_directory
 run storage_symlink_idempotent_when_already_correct
+run migrate_pretend_check_logic
 
 echo
 echo "$pass passed, $fail failed"
