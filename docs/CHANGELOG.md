@@ -3,6 +3,63 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## Third real production deploy dispatch failed; database-backup step had a live command-substitution bug (2026-10-14)
+
+- A third controlled `workflow_dispatch` (dry_run: false) against `main` (commit
+  `4aa57656d5ecaff6dfe025c0457e0c17338c70cf`) — GitHub Actions run `38638058559` — got past the
+  storage/.env symlink fix, Composer/`package:discover`, and the `migrate --pretend --force` fix
+  cleanly (`INFO Nothing to migrate.`), then failed at "backing up the database before migrating"
+  with `warning: command substitution: ignored null byte in input` followed by
+  `/bin/bash: -c: line 11: syntax error near unexpected token ')'`. The workflow's rollback worked
+  correctly again: production stayed on `af136e19a75304d0f021902d66e2a526d4baaf06` throughout.
+- **Actual root cause**: a comment on that step, `# set -o pipefail above is required here: in
+  `mysqldump | gzip`, bash's exit status ...`, had an *unescaped* backtick pair. The entire "Real
+  deploy" step is one large double-quoted bash string that the GitHub Actions runner builds
+  locally before handing it to `ssh_run` (which forwards it, as plain text, to a second, completely
+  independent parse by the remote server's shell). A backtick pair inside a double-quoted string
+  is never an inert comment to the shell that is *building* that string — it is live command
+  substitution, evaluated immediately, whether or not it looks like it's inside a `#` comment
+  (comments have no special meaning to a quote/escape scanner; they only apply once a string has
+  already been assembled and is handed to a fresh, unquoted parse). So the runner actually executed
+  the literal text `mysqldump | gzip` as a real command while constructing the string — `mysqldump`
+  doesn't exist in that context, but the resulting (near-empty) `gzip` output still contains
+  embedded NUL bytes, which got spliced into the string and corrupted everything after it. That
+  corruption surfaced, once the mangled string reached the real remote shell, as exactly the
+  reported null-byte warning and the syntax error near an orphaned `)`. Reproduced exactly in
+  isolation (`bash: command substitution: ignored null byte in input`) by constructing the same
+  kind of string with a bare backtick pair locally.
+- This was found while implementing the fix the user actually asked for — replacing the
+  `php artisan tinker --execute=...` ×4 / `MYSQL_PWD=... mysqldump -h ... -u ...` credential
+  extraction (also fragile and explicitly disallowed going forward: it put the DB password on a
+  command line and interpolated it into nested shell) — the tinker-based extraction never got a
+  chance to run; the step died on the corrupted string before reaching it.
+- **Fix, two parts**:
+  1. Escaped the backtick pair in that comment (and audited the rest of the workflow file for the
+     same class of bug — this was the only occurrence inside a quoted multi-line block; the other
+     backticks in the file are plain top-level YAML-block comments, never nested inside a quoted
+     string, so they were never at risk).
+  2. Replaced the tinker/`MYSQL_PWD` credential extraction with a small script,
+     `scripts/deploy/write-db-backup-option-file.php`, that parses the release's own `.env`
+     directly with `phpdotenv` (already a dependency; no framework boot, no PsySH/tinker REPL) and
+     writes a `chmod 600` MySQL "option file" (`[client]` section: `user`/`password`/`host`/`port`,
+     each value backslash-escaped for `"` and `\`). `mysqldump --defaults-extra-file=...` then
+     reads credentials from that file directly. The password/user/host never appear on a command
+     line, in a command substitution, or in any log — only the option file's *path* and the
+     (non-secret) database name ever cross back into the shell, and the option file is always
+     cleaned up via a `trap ... EXIT`. The backup step also now greps the dump for a Laravel-schema
+     table (`migrations`/`certificates`) in addition to the generic SQL-dump-header check, to
+     positively rule out it having backed up a legacy WordPress database by mistake.
+- Added 10 new tests to `tests/deploy/test-deploy-safety.sh` (now 25/25 passing): a control case
+  reproducing the backtick bug exactly (unescaped backtick pair executes its payload), one proving
+  the escaped version doesn't, three exercising `write-db-backup-option-file.php` directly (a
+  password containing quotes/backslash/`$`/parentheses/spaces round-trips byte-for-byte through the
+  option file; an empty password is accepted; an empty database name is rejected before any option
+  file is written), and five exercising the full backup block against fake `mysqldump` binaries
+  (succeeds on a valid Laravel-schema dump; fails closed on a connection failure, a generic
+  mysqldump failure, and an invalid/non-SQL backup file; rejects a dump that only contains legacy
+  WordPress tables). Full Laravel suite still 178/178. No application behavior, certificate
+  records, PDF files, or database schema changed by this fix.
+
 ## Second real production deploy dispatch failed; migrate --pretend needed --force (2026-10-14)
 
 - A second controlled `workflow_dispatch` (dry_run: false) against `main` (commit

@@ -456,16 +456,49 @@ jobs:
             set -eo pipefail
             cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
             mkdir -p '${{ env.REMOTE_BACKUPS }}/../db'
-            db_name=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.database');\" 2>/dev/null | tail -1)
-            db_user=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.username');\" 2>/dev/null | tail -1)
-            db_pass=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.password');\" 2>/dev/null | tail -1)
-            db_host=\$(php artisan tinker --execute=\"echo config('database.connections.mysql.host');\" 2>/dev/null | tail -1)
+            option_file=\"\$(mktemp)\"
+            cleanup_option_file() { rm -f \"\$option_file\"; }
+            trap cleanup_option_file EXIT
+            chmod 600 \"\$option_file\"
+            # write-db-backup-option-file.php parses the release's own .env directly
+            # with phpdotenv (no tinker/PsySH boot, no shell interpolation of secret
+            # values) and writes user/password/host/port into a chmod-600 MySQL
+            # option file. Only the option file's PATH and the (non-secret) database
+            # name ever touch this shell -- the password never appears on a command
+            # line or in a command substitution, so no shell metacharacter it might
+            # contain (quotes, \\\$, parentheses, backslashes, spaces) can break
+            # anything here.
+            if ! db_name=\$(php scripts/deploy/write-db-backup-option-file.php \"\$option_file\"); then
+              echo '::error::Could not prepare database credentials for backup -- see the diagnostic above. Refusing to migrate without a verified fresh backup.'
+              exit 1
+            fi
             dump_path='${{ env.REMOTE_BACKUPS }}/../db/$backup_name.sql.gz'
-            # set -o pipefail above is required here: in `mysqldump | gzip`, bash's exit
+            # set -o pipefail above is required here: in \`mysqldump | gzip\`, bash's exit
             # status for the pipeline is otherwise only gzip's -- a failed mysqldump
             # piped into a gzip that happily compresses zero bytes would look like
             # success without pipefail, leaving a corrupt/empty 'backup' on disk.
-            if ! MYSQL_PWD=\"\$db_pass\" mysqldump -h \"\$db_host\" -u \"\$db_user\" \"\$db_name\" 2>/tmp/mysqldump.err | gzip > \"\$dump_path\"; then
+            #
+            # (the backticks just above are backslash-escaped: this whole Real
+            # deploy step is itself one big double-quoted bash string passed to
+            # ssh_run, so an unescaped backtick pair here is not an inert comment
+            # to the LOCAL runner-side bash parsing that string -- it is live
+            # command substitution, executed on the runner right now, comment or
+            # not. An unescaped double-quote character here would be just as
+            # dangerous, for the same reason: it would close the outer string
+            # early and dump everything after it into bash as literal code rather
+            # than string content, so this comment avoids using any. That exact
+            # backtick bug -- a bare pair around mysqldump-pipe-gzip on this very
+            # line -- is the real root cause of a production deploy failure: the
+            # runner executed the literal text mysqldump-pipe-gzip as a command
+            # while parsing this string, producing gzip's null-byte-laden binary
+            # output, which got spliced into the string and corrupted everything
+            # after it, surfacing on the remote end as a command substitution
+            # null-byte warning followed by a syntax error near an orphaned
+            # close-paren. Escaping neutralizes it for this local parse; the
+            # resulting plain comment text sent to the remote shell is inert
+            # there regardless, since a hash comment consumes the rest of its
+            # line unconditionally on the remote side too.)
+            if ! mysqldump --defaults-extra-file=\"\$option_file\" \"\$db_name\" 2>/tmp/mysqldump.err | gzip > \"\$dump_path\"; then
               echo '::error::Database backup failed -- see captured stderr below. Refusing to migrate without a verified fresh backup.'
               cat /tmp/mysqldump.err
               rm -f \"\$dump_path\"
@@ -479,6 +512,18 @@ jobs:
             fi
             if ! zcat \"\$dump_path\" | grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE'; then
               echo '::error::Database backup does not look like a real SQL dump (no CREATE TABLE / dump header found) -- refusing to migrate without a verified backup.'
+              exit 1
+            fi
+            # Positively confirm this is the Laravel application database, not the
+            # legacy WordPress database the same cPanel account may still host --
+            # both could plausibly produce a file that passes the generic SQL-dump
+            # check above, so check for a table name specific to this app's schema.
+            # (the dot wildcards match mysqldump's surrounding backtick quoting
+            # around identifiers without putting a literal backtick in this
+            # string -- an unescaped backtick here would be re-parsed as
+            # command substitution by the remote shell.)
+            if ! zcat \"\$dump_path\" | grep -qE 'CREATE TABLE .migrations.|CREATE TABLE .certificates.'; then
+              echo '::error::Database backup does not contain this application'\"'\"'s tables (migrations/certificates) -- refusing to migrate. Is DB_DATABASE pointing at the wrong (e.g. legacy WordPress) database?'
               exit 1
             fi
             rm -f /tmp/mysqldump.err
