@@ -146,13 +146,23 @@ jobs:
         run: |
           # .env is explicitly excluded: it must never be shipped from CI and must
           # never overwrite the real production .env (APP_KEY, DB credentials, etc).
-          # storage/app/private and storage/logs are excluded: certificate PDFs,
-          # batch imports and logs are persistent production state, never shipped
-          # from or overwritten by a release.
+          #
+          # The ENTIRE storage/ directory is excluded, not just specific
+          # subdirectories -- storage/ is always the shared/storage symlink on
+          # production (certificate PDFs, batch imports, logs, framework
+          # cache/sessions/views are all persistent, cross-release state).
+          # Excluding only some subdirectories (the previous version of this
+          # exclude list) still leaves tar creating storage/ and storage/framework/
+          # as real directories in the extracted release -- and `ln -sfn` does
+          # NOT replace an existing real directory, it creates the symlink
+          # *inside* it instead, silently leaving storage/framework/views
+          # missing and breaking Laravel's bootstrap (this broke a real
+          # deploy: see docs/CHANGELOG.md). Shipping none of storage/ removes
+          # the directory from the tarball entirely, so there's nothing for
+          # the symlink step to collide with.
           tar --exclude='.git' --exclude='node_modules' --exclude='tests' \
               --exclude='.env' --exclude='.env.*' \
-              --exclude='storage/app/private' --exclude='storage/app/public' --exclude='storage/logs' \
-              --exclude='storage/framework/cache' --exclude='storage/framework/sessions' --exclude='storage/framework/views' \
+              --exclude='./storage' \
               -czf /tmp/release.tar.gz .
           sha256sum /tmp/release.tar.gz > /tmp/release.sha256
 
@@ -179,7 +189,7 @@ jobs:
               missing=1
             fi
           done
-          for forbidden in '^\./\.env$' '\./\.env\.' '^\./storage/app/private'; do
+          for forbidden in '^\./\.env$' '\./\.env\.' '^\./storage/'; do
             if grep -qE "$forbidden" "$manifest"; then
               echo "::error::Release archive unexpectedly contains a forbidden path matching: $forbidden"
               missing=1
@@ -350,6 +360,7 @@ jobs:
             echo "::error::Deploy step failed -- rolling back to $prev_release"
             ssh_run "
               set -e
+              rm -rf '${{ env.REMOTE_CURRENT }}.new'
               ln -sfn '$prev_release' '${{ env.REMOTE_CURRENT }}.new'
               mv -Tf '${{ env.REMOTE_CURRENT }}.new' '${{ env.REMOTE_CURRENT }}'
               rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.htpasswd' --exclude='.well-known' --exclude='cgi-bin' --exclude='error_log' --exclude='.user.ini' \
@@ -365,13 +376,52 @@ jobs:
             release_dir='${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
             rm -rf \"\$release_dir\"
             mkdir -p \"\$release_dir\"
-            tar --exclude='.env' --exclude='.env.*' -xzf /tmp/release-$DEPLOY_SHA.tar.gz -C \"\$release_dir\"
+            tar --exclude='.env' --exclude='.env.*' --exclude='./storage' -xzf /tmp/release-$DEPLOY_SHA.tar.gz -C \"\$release_dir\"
             rm -f /tmp/release-$DEPLOY_SHA.tar.gz
+
+            # Link the two shared paths into the release -- defensively: 'ln -sfn
+            # TARGET LINK' does NOT replace LINK if it's already a real file/directory,
+            # it creates the symlink *inside* it instead (this broke a real deploy:
+            # see docs/CHANGELOG.md). The CI tarball never ships storage/ or .env, but
+            # this guards the release_dir's own copy regardless of how it got there --
+            # always safe to rm, since release_dir was just freshly created above and
+            # is never \$SHARED itself.
+            for name in .env storage; do
+              target=\"\$release_dir/\$name\"
+              if [ -e \"\$target\" ] && [ ! -L \"\$target\" ]; then
+                echo \"::warning::\$target already existed as a real file/directory (not a symlink) before linking -- removing this release's own copy (never touches \${{ env.REMOTE_SHARED }}) so the shared symlink can take its place.\"
+                rm -rf \"\$target\"
+              fi
+            done
             ln -sfn '${{ env.REMOTE_SHARED }}/.env' \"\$release_dir/.env\"
             ln -sfn '${{ env.REMOTE_SHARED }}/storage' \"\$release_dir/storage\"
-            test -f \"\$release_dir/.env\" || { echo '::error::Shared .env symlink did not resolve in the new release -- aborting before touching anything live.'; exit 1; }
+
+            # Validate both symlinks actually resolve to the expected shared targets
+            # -- not just 'a symlink exists', but 'it points at the right place' --
+            # before Composer runs any Artisan scripts (package:discover caches
+            # config/routes and needs a real, writable storage/framework/*).
+            env_resolved=\$(readlink -f \"\$release_dir/.env\")
+            storage_resolved=\$(readlink -f \"\$release_dir/storage\")
+            expected_env=\$(readlink -f '${{ env.REMOTE_SHARED }}/.env')
+            expected_storage=\$(readlink -f '${{ env.REMOTE_SHARED }}/storage')
+            [ \"\$env_resolved\" = \"\$expected_env\" ] || { echo \"::error::.env symlink resolved to '\$env_resolved', expected '\$expected_env' -- aborting before touching anything live.\"; exit 1; }
+            [ \"\$storage_resolved\" = \"\$expected_storage\" ] || { echo \"::error::storage symlink resolved to '\$storage_resolved', expected '\$expected_storage' -- aborting before touching anything live.\"; exit 1; }
+            test -f \"\$release_dir/.env\" || { echo '::error::Shared .env symlink did not resolve to a readable file -- aborting before touching anything live.'; exit 1; }
+            for dir in framework/cache framework/sessions framework/views framework/testing logs; do
+              test -d \"\$release_dir/storage/\$dir\" || { echo \"::error::\$release_dir/storage/\$dir is missing on the shared storage target -- aborting before Composer/Artisan need it.\"; exit 1; }
+              test -w \"\$release_dir/storage/\$dir\" || { echo \"::error::\$release_dir/storage/\$dir is not writable -- Blade/route/config caching would fail. Aborting before Composer runs.\"; exit 1; }
+            done
+            echo 'Shared .env and storage symlinks verified; framework cache directories present and writable.'
+
             cd \"\$release_dir\"
-            composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --quiet
+            # Not --quiet: Composer's own output (including the real error behind
+            # a failed post-autoload-dump script, e.g. artisan package:discover) must
+            # reach the deploy log -- a real deploy failed with only the generic
+            # 'returned with error code 1' line visible because --quiet suppressed
+            # the actual exception. Composer's install output never includes secret
+            # values (no .env contents, no DB credentials) -- only package names,
+            # versions and script names -- so this is safe to leave unsuppressed.
+            composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
             chmod -R ug+rwX bootstrap/cache
           " || rollback
 
@@ -436,6 +486,7 @@ jobs:
             php artisan route:cache --quiet
             php artisan view:cache --quiet
             cd '${{ env.REMOTE_BASE }}'
+            rm -rf current.new
             ln -sfn '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA' current.new
             mv -Tf current.new current
             rsync -a --delete --exclude='index.php' --exclude='.htaccess' --exclude='.htpasswd' --exclude='.well-known' --exclude='cgi-bin' --exclude='error_log' --exclude='.user.ini' \
