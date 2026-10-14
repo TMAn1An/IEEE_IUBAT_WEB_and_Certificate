@@ -3,6 +3,42 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## First real production deploy dispatch failed; storage/.env symlink bug fixed (2026-10-14)
+
+- A controlled `workflow_dispatch` (dry_run: false) of `deploy-production.yml` against `main`
+  (commit `c87b58c935b781b9cc9bc76d67ea12d43bdaa38a`) — GitHub Actions run `38631312670` — failed
+  during `composer install`'s `post-autoload-dump` step (`php artisan package:discover`), which
+  threw `InvalidArgumentException: Please provide a valid cache path` because
+  `storage/framework/views` didn't exist in the new release directory.
+- **Root cause**: the release tarball's exclude list only excluded specific `storage/`
+  subdirectories (`app/private`, `app/public`, `logs`, `framework/{cache,sessions,views}`), not
+  `storage/` itself — so extracting the archive still created `storage/` and `storage/framework/`
+  as real (partial) directories in the new release. `ln -sfn shared/storage release/storage` then
+  ran against an *existing real directory*, and `ln -sfn` does not replace an existing directory —
+  it creates the symlink *inside* it instead, silently. The release ended up with a real,
+  incomplete `storage/framework/` and no working symlink to the shared one.
+- The workflow's own automatic rollback worked correctly: it reverted `current` and `public_html`
+  back to the previous release (`af136e19a75304d0f021902d66e2a526d4baaf06`) and failed the run
+  loudly rather than reporting success. Homepage/admin continued serving the previous release
+  throughout. The half-built failed release directory itself was manually inspected and corrected
+  on the server afterward (preserving its storage content, pointing it at the shared symlink) —
+  that repaired directory was never promoted to be the live release; `af136e19...` remained live.
+- **Fix**: the release tarball now excludes `storage/` entirely (nothing in it is ever meant to
+  ship — it's always the shared symlink in production), and the symlink step is now defensive
+  regardless of what's in the archive: it removes a conflicting real file/directory first (always
+  safe — it's the release's own fresh copy, never the shared one), creates the symlink, then
+  verifies with `readlink -f` that it actually resolves to the expected shared target before
+  Composer runs any Artisan scripts. Also audited and hardened the two `current` symlink swaps
+  (main activation and rollback) the same way, and removed `--quiet` from the release's
+  `composer install` so a real failure's actual error message reaches the deploy log instead of
+  just "returned with error code 1" (Composer's own output never contains secret values).
+- Added `scripts/lib/link-shared-paths.sh` and 3 new tests in
+  `tests/deploy/test-deploy-safety.sh` (12/12 passing), including a control case that reproduces
+  the original nested-symlink bug with plain `ln -sfn` to prove the fix actually changes the
+  outcome.
+- Full Laravel suite still 178/178 passing. No application behavior, certificate records, PDF
+  files, or database schema changed by this fix.
+
 ## Production auto-deploy workflow prepared, not yet activated (2026-10-11)
 
 - Reconciled `main` (which had already gained `.github/workflows/cpanel-connection-test.yml`)

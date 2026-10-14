@@ -6,6 +6,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/scripts/lib/move-into-shared.sh"
+source "$ROOT/scripts/lib/link-shared-paths.sh"
 
 pass=0
 fail=0
@@ -178,6 +179,68 @@ test_pruning_protects_active_and_rollback() {
   fi
 }
 
+# --- link_shared_paths: regression for the real production failure (run 38631312670) ---
+# A release tarball/extraction that leaves a REAL storage/ directory behind
+# (e.g. only some subdirectories were excluded, or a future packaging change
+# regresses this) must still end up with release/storage as a correct
+# symlink to shared/storage, not a symlink nested inside a stale real dir.
+test_storage_symlink_replaces_existing_real_directory() {
+  local d="$1"
+  mkdir -p "$d/shared/storage/framework/views" "$d/shared/storage/framework/cache"
+  echo "APP_KEY=base64:fake" > "$d/shared/.env"
+
+  mkdir -p "$d/release"
+  # Simulate the exact bug: the archive shipped storage/framework/ (missing
+  # views/) as a real, partial directory -- not a symlink.
+  mkdir -p "$d/release/storage/framework/sessions"
+  echo "stale real .env, not the shared one" > "$d/release/.env"
+
+  link_shared_paths "$d/release" "$d/shared" >/dev/null
+
+  if [ -L "$d/release/storage" ] \
+     && [ "$(readlink -f "$d/release/storage")" = "$(readlink -f "$d/shared/storage")" ] \
+     && [ -d "$d/release/storage/framework/views" ] \
+     && [ -L "$d/release/.env" ] \
+     && [ "$(cat "$d/release/.env")" = "APP_KEY=base64:fake" ]; then
+    ok "an existing real storage/ (and .env) directory/file is replaced with a correct symlink to shared/, not nested inside it"
+  else
+    bad "storage/.env symlink did not correctly replace the pre-existing real directory/file"
+  fi
+}
+
+# --- link_shared_paths: demonstrates the bug this fixes, with plain ln -sfn ---
+test_plain_ln_sfn_nests_symlink_inside_existing_directory() {
+  local d="$1"
+  mkdir -p "$d/shared/storage/framework/views"
+  mkdir -p "$d/release/storage/framework/sessions"  # real dir, missing views/ -- the bug
+
+  ( ln -sfn "$d/shared/storage" "$d/release/storage" )
+
+  if [ -d "$d/release/storage" ] && [ ! -L "$d/release/storage" ] && [ -L "$d/release/storage/storage" ]; then
+    ok "control case: plain ln -sfn nests the symlink inside the existing real directory instead of replacing it (confirms the bug link_shared_paths fixes)"
+  else
+    bad "expected plain ln -sfn to reproduce the nesting bug, but it didn't -- control case is no longer valid"
+  fi
+}
+
+# --- link_shared_paths: already-correct symlinks are left alone (idempotent) ---
+test_storage_symlink_idempotent_when_already_correct() {
+  local d="$1"
+  mkdir -p "$d/shared/storage/framework/views"
+  echo "APP_KEY=base64:fake" > "$d/shared/.env"
+  mkdir -p "$d/release"
+  ln -s "$d/shared/storage" "$d/release/storage"
+  ln -s "$d/shared/.env" "$d/release/.env"
+
+  link_shared_paths "$d/release" "$d/shared" >/dev/null
+
+  if [ -L "$d/release/storage" ] && [ "$(readlink -f "$d/release/storage")" = "$(readlink -f "$d/shared/storage")" ]; then
+    ok "re-running link_shared_paths against already-correct symlinks is a safe no-op"
+  else
+    bad "re-running on already-correct symlinks broke them"
+  fi
+}
+
 run() {
   local name="$1"
   with_tmp "test_$name"
@@ -192,6 +255,9 @@ run incomplete_release_blocks_activation
 run mysqldump_pipefail
 run mysqldump_without_pipefail_is_masked
 run pruning_protects_active_and_rollback
+run storage_symlink_replaces_existing_real_directory
+run plain_ln_sfn_nests_symlink_inside_existing_directory
+run storage_symlink_idempotent_when_already_correct
 
 echo
 echo "$pass passed, $fail failed"
