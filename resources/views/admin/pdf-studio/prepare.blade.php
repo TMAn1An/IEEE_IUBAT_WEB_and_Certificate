@@ -1,4 +1,5 @@
 <x-layouts.admin title="Upload Participants — {{ $template->name }}">
+  <x-pdf-studio-stepper :template="$template" current="participants" />
   <div class="admin-card" style="max-width:860px">
     <h2 style="margin-top:0">Upload participant data — {{ $template->name }}</h2>
     <p style="color:var(--muted)">
@@ -50,15 +51,17 @@
         <input type="file" id="photos" multiple accept="image/jpeg,image/png">
       </div>
       <button type="button" class="btn btn--primary" id="preview-btn">Validate &amp; preview</button>
+      <span id="preview-spinner" style="display:none;color:var(--muted);margin-left:8px">Validating…</span>
+
+      <div id="notice-area"></div>
 
       <div id="preview-area" style="margin-top:20px;display:none">
         <h3>Preview</h3>
-        <p id="preview-summary"></p>
-        <ul id="preview-errors" style="color:var(--danger)"></ul>
+        <div id="preview-summary"></div>
         <table class="admin-table" id="preview-table"><thead></thead><tbody></tbody></table>
         <button type="button" class="btn btn--primary" id="confirm-btn" style="margin-top:12px">Confirm &amp; Generate</button>
+        <span id="confirm-spinner" style="display:none;color:var(--muted);margin-left:8px">Creating batch…</span>
       </div>
-      <p id="notice" style="color:var(--danger)"></p>
     @endif
   </div>
 
@@ -67,50 +70,109 @@
     const templateId = {{ $template->id }};
     const apiBase = @json(url('/admin/api/pdf-studio'));
     const csrf = @json(csrf_token());
+    const studioShowUrl = @json(route('admin.pdf-studio.show', $template));
     const studioShowBatchUrl = @json(route('admin.pdf-studio.show-batch', [$template, '__BATCH__']));
     let prepareToken = null;
 
-    function notice(msg) { document.getElementById('notice').textContent = msg || ''; }
+    // A whole-file rejection (duplicate/unknown/missing columns) means the
+    // uploaded spreadsheet doesn't match this template's saved field
+    // mapping -- the fix is in PDF Studio's Configure data step, not in the
+    // spreadsheet alone, so point there directly instead of leaving the
+    // admin to guess. Per-row problems (a blank required cell, a missing
+    // photo) are the spreadsheet's own content and don't need that link.
+    const MAPPING_ERROR_RE = /unknown column|missing required column|duplicate column/i;
+
+    function notice(msg, { isError = true, linkToMapping = false } = {}) {
+      const area = document.getElementById('notice-area');
+      if (!msg) { area.innerHTML = ''; return; }
+      const cls = isError ? 'alert alert--error' : 'alert alert--ok';
+      const link = linkToMapping
+        ? ` <a href="${studioShowUrl}">Open this template's field mapping in PDF Studio &rarr;</a>`
+        : '';
+      area.innerHTML = `<div class="${cls}" role="alert">${msg}${link}</div>`;
+    }
+
+    function setBusy(button, spinnerId, busy) {
+      button.disabled = busy;
+      document.getElementById(spinnerId).style.display = busy ? 'inline' : 'none';
+    }
 
     document.getElementById('preview-btn').addEventListener('click', async () => {
       notice('');
       const participants = document.getElementById('participants').files[0];
       if (!participants) { notice('Choose a spreadsheet first.'); return; }
-      const form = new FormData();
-      form.set('participants', participants);
-      for (const f of document.getElementById('photos').files) form.append('photos[]', f);
+      const previewBtn = document.getElementById('preview-btn');
+      setBusy(previewBtn, 'preview-spinner', true);
+      document.getElementById('preview-area').style.display = 'none';
+      try {
+        const form = new FormData();
+        form.set('participants', participants);
+        for (const f of document.getElementById('photos').files) form.append('photos[]', f);
 
-      const res = await fetch(`${apiBase}/templates/${templateId}/batches`, {
-        method: 'POST', body: form, headers: { 'X-CSRF-TOKEN': csrf, Accept: 'application/json' }, credentials: 'same-origin',
-      });
-      const data = await res.json();
-      if (!res.ok) { notice(data.message || 'Could not validate the spreadsheet.'); return; }
+        const res = await fetch(`${apiBase}/templates/${templateId}/batches`, {
+          method: 'POST', body: form, headers: { 'X-CSRF-TOKEN': csrf, Accept: 'application/json' }, credentials: 'same-origin',
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          notice(data.message || 'Could not validate the spreadsheet.', { linkToMapping: MAPPING_ERROR_RE.test(data.message || '') });
+          return;
+        }
 
-      prepareToken = data.token;
-      document.getElementById('preview-area').style.display = 'block';
-      document.getElementById('preview-summary').textContent = `${data.total_rows} row(s). ${data.errors.length} error(s).`;
-      document.getElementById('preview-errors').innerHTML = data.errors.map((e) => `<li>${e}</li>`).join('');
-      const cols = data.columns;
-      document.querySelector('#preview-table thead').innerHTML = '<tr>' + cols.map((c) => `<th>${c}</th>`).join('') + '</tr>';
-      document.querySelector('#preview-table tbody').innerHTML = data.rows.map((r) =>
-        '<tr>' + cols.map((c) => `<td>${r.values[c] ?? ''}</td>`).join('') + '</tr>'
-      ).join('');
-      document.getElementById('confirm-btn').disabled = data.errors.length > 0;
+        prepareToken = data.token;
+        document.getElementById('preview-area').style.display = 'block';
+        const okRows = data.total_rows - data.errors.length;
+        const summaryCls = data.errors.length > 0 ? 'alert alert--error' : 'alert alert--ok';
+        document.getElementById('preview-summary').innerHTML =
+          `<div class="${summaryCls}" role="status">`
+          + `${data.total_rows} row${data.total_rows === 1 ? '' : 's'} read — `
+          + `${okRows} ready to generate` + (data.errors.length > 0 ? `, ${data.errors.length} need fixing before you can continue.` : '.')
+          + `</div>`;
+
+        const rowErrorsByNumber = new Map(data.rows.filter((r) => r.errors && r.errors.length > 0).map((r) => [r.row, r.errors]));
+        const cols = data.columns;
+        document.querySelector('#preview-table thead').innerHTML =
+          '<tr><th>Row</th>' + cols.map((c) => `<th>${c}</th>`).join('') + '<th>Issues</th></tr>';
+        document.querySelector('#preview-table tbody').innerHTML = data.rows.map((r) => {
+          const rowErrors = rowErrorsByNumber.get(r.row) ?? [];
+          const rowStyle = rowErrors.length > 0 ? ' style="background:var(--danger-bg)"' : '';
+          const issues = rowErrors.length > 0
+            ? `<span class="badge badge--required">${rowErrors.join('; ')}</span>`
+            : '<span class="badge badge--active">OK</span>';
+          return `<tr${rowStyle}><td>${r.row}</td>` + cols.map((c) => `<td>${r.values[c] ?? ''}</td>`).join('') + `<td>${issues}</td></tr>`;
+        }).join('');
+        document.getElementById('confirm-btn').disabled = data.errors.length > 0;
+      } finally {
+        setBusy(previewBtn, 'preview-spinner', false);
+      }
     });
 
     document.getElementById('confirm-btn').addEventListener('click', async () => {
       if (!prepareToken) return;
       notice('');
-      const idempotencyKey = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
-      const res = await fetch(`${apiBase}/templates/${templateId}/batches/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, Accept: 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ token: prepareToken, idempotency_key: idempotencyKey }),
-      });
-      const data = await res.json();
-      if (!res.ok) { notice(data.message || 'Could not confirm the batch.'); return; }
-      window.location.href = studioShowBatchUrl.replace('__BATCH__', data.batch_id);
+      const confirmBtn = document.getElementById('confirm-btn');
+      // Disabled immediately, for the whole request -- the server-side
+      // idempotency key also protects against a double-submit (e.g. a
+      // second tab, a retried request), but disabling here is what stops
+      // an admin from creating two batches by clicking twice before the
+      // first response lands.
+      setBusy(confirmBtn, 'confirm-spinner', true);
+      try {
+        const idempotencyKey = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+        const res = await fetch(`${apiBase}/templates/${templateId}/batches/confirm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, Accept: 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ token: prepareToken, idempotency_key: idempotencyKey }),
+        });
+        const data = await res.json();
+        if (!res.ok) { notice(data.message || 'Could not confirm the batch.'); setBusy(confirmBtn, 'confirm-spinner', false); return; }
+        window.location.href = studioShowBatchUrl.replace('__BATCH__', data.batch_id);
+        // Deliberately left disabled/busy through the redirect -- there is
+        // nothing useful to click here once a batch exists server-side.
+      } catch (err) {
+        notice('Could not reach the server. Check your connection and try again.');
+        setBusy(confirmBtn, 'confirm-spinner', false);
+      }
     });
   </script>
   @endunless
