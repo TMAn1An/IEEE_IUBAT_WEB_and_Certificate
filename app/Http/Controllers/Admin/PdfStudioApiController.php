@@ -118,11 +118,24 @@ class PdfStudioApiController extends Controller
         return response()->json($template->editor_schema);
     }
 
-    public function sampleXlsx(CertificateTemplate $template): BinaryFileResponse
+    public function sampleXlsx(CertificateTemplate $template): BinaryFileResponse|Response
     {
         $this->authorize('create', Certificate::class);
 
         abort_unless($template->editor_schema !== null, 404);
+
+        // A template with no participant columns mapped (e.g. saved before any
+        // field was assigned an Excel column in PDF Studio's save step) would
+        // otherwise silently download a workbook with zero columns and zero
+        // rows -- nothing wrong technically, but useless and confusing. Fail
+        // with an actionable message instead.
+        if (($template->editor_schema['fields'] ?? []) === []) {
+            return response(
+                "This template has no participant columns configured yet.\n\n".
+                'Open it in PDF Studio and, when saving, assign an Excel column name to each field that should come from the participant spreadsheet (name, ID, etc.) -- fields left blank there stay fixed/decorative and never need a column.',
+                422,
+            )->header('Content-Type', 'text/plain');
+        }
 
         $spreadsheet = new Spreadsheet;
         $sheet = $spreadsheet->getActiveSheet();

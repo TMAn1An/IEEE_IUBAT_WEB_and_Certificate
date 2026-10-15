@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Deletion\DeletionRequestService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\BuildsForms;
+use Tests\Concerns\NormalizesArraysForComparison;
 use Tests\TestCase;
 use TMAn1An\FormBuilder\Enums\FormFieldType;
 use TMAn1An\FormBuilder\Enums\FormStatus;
@@ -25,7 +26,7 @@ use TMAn1An\FormBuilder\Styling\FormStyleSchema;
  */
 class FormBuilderTest extends TestCase
 {
-    use BuildsForms, RefreshDatabase;
+    use BuildsForms, NormalizesArraysForComparison, RefreshDatabase;
 
     public function test_admin_creates_a_draft_form_and_lands_on_the_builder(): void
     {
@@ -69,7 +70,7 @@ class FormBuilderTest extends TestCase
 
         $name = $fields[0];
         $this->assertTrue($name->required);
-        $this->assertEquals(['width' => 50, 'placeholder' => 'Your name', 'help_text' => 'As on your ID', 'max_length' => 120], $name->settings);
+        $this->assertSameNormalized(['width' => 50, 'placeholder' => 'Your name', 'help_text' => 'As on your ID', 'max_length' => 120], $name->settings);
 
         $department = $fields[2];
         $this->assertSame(FormFieldType::Select, $department->type);
@@ -77,11 +78,14 @@ class FormBuilderTest extends TestCase
         $this->assertSame([['label' => 'CSE', 'value' => 'cse'], ['label' => 'EEE', 'value' => 'eee'], ['label' => 'Other', 'value' => 'other']], $department->options());
         $this->assertSame('cse', $department->setting('default_value'));
 
-        // assertEquals, not assertSame: MySQL's native JSON column type does not
-        // guarantee member order on round-trip (keys/values are unaffected). SQLite
+        // assertSameNormalized, not assertSame: MySQL's native JSON column type does
+        // not guarantee member order on round-trip (keys/values are unaffected). SQLite
         // stores JSON as plain TEXT and happens to preserve order, which is why this
-        // only showed up against a real MySQL test database.
-        $this->assertEquals(['content' => 'About you', 'heading_level' => 'h2', 'text_align' => 'center'], $fields[3]->settings);
+        // only showed up against a real MySQL test database. Unlike assertEquals
+        // (which the previous fix used), this stays strict on scalar types -- it
+        // normalizes key order, then still runs assertSame, so `1` vs `"1"` still
+        // fails. See NormalizesArraysForComparisonTest for direct coverage.
+        $this->assertSameNormalized(['content' => 'About you', 'heading_level' => 'h2', 'text_align' => 'center'], $fields[3]->settings);
 
         // Reorder: move "age" to the top; ids are kept, order changes.
         $payload = $this->fieldsAsPayload($form);
@@ -330,9 +334,11 @@ class FormBuilderTest extends TestCase
             $this->fieldDef('select', 'department', 'Department', ['settings' => ['options' => $options]]),
             $this->fieldDef('text', 'other_department', 'Other department', ['required' => true, 'conditional_rules' => $rule]),
         ])->assertOk();
-        // assertEquals, not assertSame -- see the comment at the settings() assertion
-        // above: MySQL's JSON column type doesn't preserve member order on round-trip.
-        $this->assertEquals($rule, $form->fresh()->fields[1]->conditional_rules);
+        // assertSameNormalized, not assertSame -- see the comment at the settings()
+        // assertion above: MySQL's JSON column type doesn't preserve member order on
+        // round-trip, but this is still strict on scalar types and on list order
+        // (the "conditions" list itself is never reordered here).
+        $this->assertSameNormalized($rule, $form->fresh()->fields[1]->conditional_rules);
 
         // Unknown key
         $bad = $rule;
