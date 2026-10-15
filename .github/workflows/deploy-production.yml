@@ -1,13 +1,22 @@
 name: Deploy to Production (cPanel)
 
-# Intentionally workflow_dispatch-only for now -- see docs/CHANGELOG.md and PR #1.
-# GitHub only allows workflow_dispatch against a workflow file that already
-# exists on the default branch, so this file has to land on main before it
-# can be dispatched and tested at all. Adding `on: push: branches: [main]` in
-# the same change that lands it on main would make the very first run
-# against real production an untested, unsupervised push trigger. So this
-# ships dispatch-only; a tiny follow-up PR adds the push trigger (Phase E)
-# once a dry run and one supervised manual deploy have both succeeded.
+# Automatic production deployment is now active: every push to `main`
+# (including a PR merge, which GitHub performs as an ordinary push to the
+# base branch) triggers a real deploy. This followed, in order: a dry run
+# dispatch, three supervised real dispatches that each found and fixed a
+# distinct production-pipeline bug (see docs/CHANGELOG.md -- storage/.env
+# symlinks, migrate --pretend's interactive confirmation, and a database-
+# backup credential-handling rewrite), and a fourth real dispatch that
+# finally succeeded end-to-end (run 38682171689, commit d5282a4). See PR #1
+# for the original dispatch-only rationale and PRs #4-#6 for the fixes.
+#
+# `branches: [main]` scopes the push trigger to `main` only -- a push to any
+# other branch (a feature branch, a PR's own branch) does not start this
+# workflow at all, so it cannot reach the `deploy` job or its `production`
+# environment. `workflow_dispatch` is kept, with `dry_run` still defaulting
+# to true, as a manual/inspection path independent of a push (e.g. to dry-
+# run-validate a hotfix branch's deployability before merging, or to retry
+# a deploy without creating a new commit).
 #
 # One-time prerequisite (NOT performed by this workflow): the production
 # server must already be bootstrapped into the releases/shared/current
@@ -17,6 +26,8 @@ name: Deploy to Production (cPanel)
 # attempting to restructure the server itself -- that is a separate,
 # explicitly-gated, one-time action.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -212,6 +223,15 @@ jobs:
     timeout-minutes: 25
     environment: production
     steps:
+      # Full history (fetch-depth: 0) is required here, not for packaging
+      # (that already happened in build-and-validate) but so the "guarding
+      # against deploying an outdated commit" check below -- git merge-base
+      # --is-ancestor -- has the currently-active production release's
+      # commit available locally to compare against, however far back it is.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ github.sha }}
@@ -264,7 +284,10 @@ jobs:
           chmod +x "$work_dir/scp.sh"
 
       - name: Dry run -- read-only connectivity, layout and lock inspection, no writes
-        if: ${{ inputs.dry_run }}
+        # Explicit on event type, not just a bare `inputs.dry_run`: a push
+        # event has no `inputs` at all, and this step must never run for one
+        # regardless of how that context happens to evaluate.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           set -euo pipefail
           work_dir="${{ steps.ssh-setup.outputs.work_dir }}"
@@ -298,7 +321,9 @@ jobs:
           echo "::notice::DRY RUN complete. No files were written and nothing was restarted on production."
 
       - name: Real deploy
-        if: ${{ !inputs.dry_run }}
+        # A push always deploys for real. A workflow_dispatch deploys for
+        # real only when dry_run was explicitly set to false.
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
         env:
           DEPLOY_SHA: ${{ needs.build-and-validate.outputs.deploy_sha }}
         run: |
@@ -340,6 +365,29 @@ jobs:
           echo "--- recording rollback point ---"
           prev_release="$(ssh_run "readlink '${{ env.REMOTE_CURRENT }}'")"
           echo "Previous release: $prev_release"
+
+          echo "--- guarding against deploying an outdated commit over a newer release ---"
+          # release directories are always named after the git commit they
+          # were built from (both this workflow's activation step and the
+          # one-time scripts/production-bootstrap.sh), so the basename of the
+          # `current` symlink's target is the SHA presently live in
+          # production. Refuse to proceed unless $DEPLOY_SHA is that commit
+          # or a descendant of it -- this is what stops a stale/outdated
+          # workflow run (an old queued dispatch, a re-run of a superseded
+          # job) from overwriting a newer production release with older
+          # code. A legitimate rollback is still possible: revert forward
+          # with a new commit and deploy that, rather than re-deploying an
+          # old SHA directly.
+          prev_sha="$(basename "$prev_release")"
+          if [ "$prev_sha" = "$DEPLOY_SHA" ]; then
+            echo "DEPLOY_SHA ($DEPLOY_SHA) already matches the currently-active release -- idempotent re-deploy, proceeding."
+          elif git merge-base --is-ancestor "$prev_sha" "$DEPLOY_SHA" 2>/tmp/ancestry.err; then
+            echo "Confirmed: $DEPLOY_SHA is a descendant of the currently-active release $prev_sha -- safe to proceed."
+          else
+            echo "::error::Refusing to deploy $DEPLOY_SHA over the currently-active production release $prev_sha -- $DEPLOY_SHA is not a descendant of $prev_sha (it may be older, or on a diverged/rewritten history). This guards against an outdated workflow run or a stale dispatch overwriting a newer production release."
+            cat /tmp/ancestry.err 2>/dev/null || true
+            exit 1
+          fi
 
           echo "--- backing up current release + current public_html before any change ---"
           backup_name="$(date -u +%Y%m%dT%H%M%SZ)-pre-$DEPLOY_SHA"

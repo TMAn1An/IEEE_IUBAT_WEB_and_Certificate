@@ -645,6 +645,69 @@ EOF
   fi
 }
 
+# --- staleness guard, reproduced from .github/workflows/deploy-production.yml's
+# "guarding against deploying an outdated commit over a newer release" block
+# (kept in sync by hand with that embedded step) -- prevents an outdated
+# workflow run or a stale dispatch from overwriting a newer production
+# release with older code. Exercised against a disposable local git repo
+# with real commits, not fakes, since this logic is pure git plumbing. ---
+run_staleness_guard() {
+  local prev_sha="$1" deploy_sha="$2"
+  if [ "$prev_sha" = "$deploy_sha" ]; then
+    echo "DEPLOY_SHA ($deploy_sha) already matches the currently-active release -- idempotent re-deploy, proceeding."
+    return 0
+  elif git merge-base --is-ancestor "$prev_sha" "$deploy_sha" 2>/dev/null; then
+    echo "Confirmed: $deploy_sha is a descendant of the currently-active release $prev_sha -- safe to proceed."
+    return 0
+  else
+    echo "ERROR: refusing to deploy $deploy_sha over the currently-active production release $prev_sha"
+    return 1
+  fi
+}
+
+test_staleness_guard_logic() {
+  local d="$1"
+  git -C "$d" init -q -b main
+  git -C "$d" config user.email "test@example.com"
+  git -C "$d" config user.name "Test"
+
+  echo a > "$d/f"; git -C "$d" add f; git -C "$d" commit -q -m A
+  sha_a="$(git -C "$d" rev-parse HEAD)"
+  echo b > "$d/f"; git -C "$d" add f; git -C "$d" commit -q -m B
+  sha_b="$(git -C "$d" rev-parse HEAD)"
+
+  # A divergent commit C, branched from A, never containing B -- simulates
+  # an unrelated/rewritten history, not just an older linear commit.
+  git -C "$d" checkout -q -b side "$sha_a"
+  echo c > "$d/f"; git -C "$d" add f; git -C "$d" commit -q -m C
+  sha_c="$(git -C "$d" rev-parse HEAD)"
+  git -C "$d" checkout -q main
+
+  if (cd "$d" && run_staleness_guard "$sha_a" "$sha_b") >/dev/null 2>&1; then
+    ok "deploying a newer commit (B) over an older active release (A) proceeds"
+  else
+    bad "deploying a strictly newer commit over an older active release was incorrectly blocked"
+  fi
+
+  if (cd "$d" && run_staleness_guard "$sha_b" "$sha_a") >/dev/null 2>&1; then
+    bad "deploying an older commit (A) over a newer active release (B) should have been refused, but it proceeded"
+  else
+    ok "deploying an older commit over a newer active release is refused (the real bug this guards against)"
+  fi
+
+  if (cd "$d" && run_staleness_guard "$sha_b" "$sha_c") >/dev/null 2>&1; then
+    bad "deploying a divergent commit (C, not a descendant of B) should have been refused, but it proceeded"
+  else
+    ok "deploying a divergent/rewritten-history commit that isn't a descendant of the active release is refused"
+  fi
+
+  if (cd "$d" && run_staleness_guard "$sha_b" "$sha_b") >/dev/null 2>&1; then
+    ok "re-deploying the same commit that's already active is treated as an idempotent no-op, not blocked"
+  else
+    bad "re-deploying the currently-active commit was incorrectly refused"
+  fi
+}
+
 run() {
   local name="$1"
   with_tmp "test_$name"
@@ -673,6 +736,7 @@ run db_backup_fails_closed_on_connection_failure
 run db_backup_fails_closed_on_generic_mysqldump_failure
 run db_backup_rejects_invalid_backup_file
 run db_backup_rejects_wrong_database
+run staleness_guard_logic
 
 echo
 echo "$pass passed, $fail failed"
