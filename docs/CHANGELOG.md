@@ -3,6 +3,57 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## First real production deploy succeeded; integration branch reconciled; automatic push-to-main deployment activated (2026-10-15)
+
+- A fourth `workflow_dispatch` (dry_run: false) against `main` (commit `d5282a4cfe09465bc122d984c717d39f000c0e6c`) —
+  GitHub Actions run `38682171689` — **succeeded end-to-end for the first time**: both jobs green,
+  the "Real deploy" step completed (not just the preflight/build steps that had succeeded on
+  earlier, since-fixed attempts), smoke checks passed, and production (`https://ieee.iubat.edu`) is
+  confirmed serving that release. Verified independently via `actions_get`/`actions_list` against
+  the real run before treating it as fact. The previous release remains on disk for rollback, per
+  the pruning policy's active/rollback-target protection (unchanged by this entry).
+- **Reconciled `claude/happy-pascal-y6ek93`** (4 commits added after PR #1 had already merged its
+  earlier content — none touching the deploy pipeline): the blank-sample-Excel-download fix (+
+  re-synced `pdf-editor` vendor assets to pinned commit `c87c3cdfba6d`), optional per-member
+  `avatar_position`, a committed `package-lock.json`, and a corrected (genuinely strict except on
+  JSON key order) `FormBuilderTest` assertion helper. Only `package-lock.json` conflicted with
+  `main`'s own independently-added lockfile (`package.json` is byte-identical on both sides) —
+  regenerated fresh via `npm install --package-lock-only`, verified `npm ci && npm run build`
+  still produces the expected bundle. Merged as PR #7. Full suite: 184/184 (178 + 6 new). Deploy
+  safety suite unaffected: still 25/25 (confirms no overlap with the deploy pipeline).
+- **Activated automatic deployment on push to `main`** (`on: push: branches: [main]`, alongside
+  the existing `workflow_dispatch` with `dry_run` still defaulting to `true`). A push to any other
+  branch does not start this workflow at all, so a feature branch can never reach the `deploy` job
+  or the `production` GitHub Environment it runs under. The "Dry run" and "Real deploy" steps' `if:`
+  conditions were made explicit on `github.event_name` (`push` always deploys for real;
+  `workflow_dispatch` only deploys for real when `dry_run` is explicitly `false`) rather than
+  relying on `inputs.dry_run` evaluating to a falsy `null` on a push event -- correct either way,
+  but explicit for a future maintainer reading a production deploy gate.
+- **Added a staleness guard**: right after capturing the rollback point (before any destructive
+  action), the workflow now extracts the SHA of the currently-active production release (the
+  basename of the `current` symlink's target -- both this workflow's own activation step and
+  `scripts/production-bootstrap.sh` always name a release directory after the commit it was built
+  from) and refuses to proceed unless the commit being deployed is that SHA or a descendant of it
+  (`git merge-base --is-ancestor`), added `actions/checkout` (`fetch-depth: 0`) to the `deploy` job
+  so that check has full history available regardless of how far back the active release is. This
+  prevents an outdated/stale workflow run (an old queued dispatch, a re-run of a superseded job)
+  from overwriting a newer production release with older code. A deploy of the already-active
+  commit is still allowed through as an idempotent no-op; a genuine rollback is done by reverting
+  forward with a new commit, never by re-deploying an old SHA directly.
+- Added 4 new tests to `tests/deploy/test-deploy-safety.sh` (now 29/29 passing) covering the
+  staleness guard against a disposable local git repo with real commits: a strictly-newer deploy
+  proceeds, an older deploy over a newer active release is refused, a divergent/rewritten-history
+  commit is refused, and re-deploying the already-active commit is treated as a no-op rather than
+  blocked. Also re-ran the full "Real deploy" step simulation (mocked `ssh_run`, `bash -n` on every
+  resulting remote command) with real commit SHAs from this repository's own history to confirm
+  the guard fires at the right point and with the right verdict in both directions.
+- Deployment locking (`concurrency: group: production-deploy`), SSH fingerprint verification,
+  database backup, storage/`.env` symlink preservation, release rollback, and secrets handling are
+  all unchanged by this entry -- nothing in the existing `deploy` job logic was altered beyond
+  adding the checkout step and the staleness-guard block described above.
+- Does not change any certificate data, database schema, stored PDFs, production backups, or
+  private storage, and does not alter the existing release-retention/pruning policy.
+
 ## Third real production deploy dispatch failed; database-backup step had a live command-substitution bug (2026-10-14)
 
 - A third controlled `workflow_dispatch` (dry_run: false) against `main` (commit
