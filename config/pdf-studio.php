@@ -8,13 +8,13 @@
  */
 return [
     // Relative to public/ — e.g. "vendor/pdf-editor/b5495579ebe8".
-    'asset_path' => env('PDF_STUDIO_ASSET_PATH', 'vendor/pdf-editor/c211ab2038fa'),
+    'asset_path' => env('PDF_STUDIO_ASSET_PATH', 'vendor/pdf-editor/7f380f496cab'),
 
     // The pdfeditor commit this asset_path was built from (informational,
     // surfaced in the admin UI / docs so "which build is live" is never a
     // guess). Kept in sync with public/vendor/pdf-editor/manifest.json by
     // the sync script.
-    'source_commit' => env('PDF_STUDIO_SOURCE_COMMIT', 'c211ab2038fa2d5974f4aae653e76ddf9d84b220'),
+    'source_commit' => env('PDF_STUDIO_SOURCE_COMMIT', '7f380f496cabe91309076362cd92e755185a2be3'),
 
     // Maximum participant Excel rows accepted by a single "reserve" request.
     'max_batch_rows' => (int) env('PDF_STUDIO_MAX_BATCH_ROWS', 500),
