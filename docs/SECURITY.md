@@ -13,6 +13,9 @@ new user-facing surface is added.
   cast — never rolled by hand, never logged, never returned in a response: `User::$hidden` includes
   `password`, and `UserManagementTest::test_admin_user_passwords_are_never_exposed_in_responses`
   guards this).
+- Every new password (admin creation, admin edit, and self-service change-password — see "My
+  Profile" below) is validated against one `Password::defaults()` policy set globally in
+  `AppServiceProvider::boot()`: minimum 12 characters, upper and lower case, a number, a symbol.
 - Session-based auth (Laravel's default `web` guard, `database` session driver — no Redis), not
   token auth — this is a server-rendered Blade admin, not an SPA/API client.
 - Login throttling: `Admin\AuthController::login()` uses `RateLimiter` keyed on
@@ -36,8 +39,24 @@ new user-facing surface is added.
   toggle-active and update actions) — prevents the admin panel from ever locking everyone out.
   Deleting a user isn't a feature at all in Version 1 (deactivate only), which sidesteps the
   "accidentally delete the last admin" failure mode entirely.
-- Password reset stays out of scope for Version 1 (per the Phase 2 brief) — an inactive/locked-out
-  admin is unblocked by another Super Admin via the Users screen instead.
+- Password *reset* (an unauthenticated "forgot password" recovery flow) stays out of scope for
+  Version 1 (per the Phase 2 brief) — an inactive/locked-out admin is unblocked by another Super
+  Admin via the Users screen instead. Self-service *change* password (while already signed in, with
+  the current password) is a separate, in-scope feature: `Admin\ProfileController` ("My Profile",
+  every role). It requires the current session plus the current password, so it adds no new path
+  into an account — see the entry below for how it's scoped, rate-limited and session-rotated.
+- **My Profile / change password** (`Admin\ProfileController`, any authenticated role): no `{user}`
+  route parameter exists on `admin.profile.*` at all, so every action acts on `$request->user()`
+  only — there is no route through which one account could change another's password. Current
+  password is verified with `Hash::check()` (same primitive `Auth::attempt()` and the
+  `current_password` validation rule use), rate-limited the same way as login (`RateLimiter`, 5
+  attempts/60s, keyed per user id). The new password is written with a single-column
+  `forceFill(['password' => ...])->save()`, never a mass update of request input, so role/
+  is_active/email cannot change through this endpoint regardless of what a request sends. A
+  successful change rotates the current session (`session()->regenerate()`) and deletes every other
+  `sessions` row for that user (the `database` session driver's one-row-per-session, keyed by id
+  with a `user_id` column), logging out every other signed-in device immediately. Covered by
+  `tests/Feature/Admin/ProfileTest.php`.
 
 ## CSRF / XSS / injection
 

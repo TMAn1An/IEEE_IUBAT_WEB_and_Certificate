@@ -3,6 +3,64 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## Self-service Admin Profile and Change Password (2026-10-15)
+
+- Added "My Profile" (`admin.profile.edit` / `admin.profile.password.update`,
+  `Admin\ProfileController`): every authenticated admin, any role, can view their own name, email,
+  role and account status, and change their own password. Linked from a new always-visible sidebar
+  nav item (not role-gated, unlike "Users") and from the sidebar footer's account name.
+- This is a *different* feature from the "self-service password reset" that `docs/SECURITY.md`
+  says stays out of scope for Version 1 — that line is about an unauthenticated "forgot password"
+  recovery flow for a locked-out admin (still out of scope: an inactive/locked-out admin is still
+  unblocked only by a Super Admin, via the existing Users screen). This feature requires the
+  *current* password and an active session; it adds no new way into an account.
+- **Authorization is structural, not a role check**: `admin.profile.*` has no `{user}` route
+  parameter at all — every action in `Admin\ProfileController` acts on `$request->user()` only,
+  so there is no route that can target another account's password, by construction.
+  `Admin\UserController`'s existing ability for a Super Admin to manage *other* users (including
+  setting their password) is untouched.
+- Current-password verification uses `Hash::check()` (the same primitive Laravel's `current_password`
+  validation rule and `Auth::attempt()` use) — done in the controller rather than as a validation
+  rule, so a wrong attempt can be rate-limited (`RateLimiter`, keyed per user id, 5 attempts/60s,
+  mirroring `Admin\AuthController::login()`'s own pattern) before failing, the same way a wrong
+  login password is.
+- The new password is written via `$user->forceFill(['password' => ...])->save()` — one column,
+  never `$user->update($request->validated())` — so role/is_active/email cannot change through this
+  endpoint regardless of what a request sends (tested explicitly with a crafted payload).
+- Strengthened `Password::defaults()` globally (`AppServiceProvider::boot()`: min 12 chars, mixed
+  case, numbers, symbols — matching the minimum `app:make-admin` already enforced independently for
+  the first Super Admin) so admin user creation/edit (`Admin\StoreUserRequest`/`UpdateUserRequest`)
+  and this new change-password form share one "strong password" standard, not two different ones on
+  the same `users` table. No `->uncompromised()` check (that calls an external HTTPS API per
+  validation — would make tests and an offline deploy depend on outbound network access for a login
+  form to work).
+- On a successful change: the current session is rotated (`session()->regenerate()`, the same
+  session-fixation defense `AuthController::login()` uses after login — the user stays signed in on
+  *this* session), and every *other* session row for that user is deleted directly from the
+  `sessions` table (the `database` session driver already in use — see `config/session.php` — keeps
+  one row per session keyed by id, with a `user_id` column), logging out every other signed-in
+  device/browser immediately. A no-op under any other session driver.
+- Reused the existing admin design system as-is — `admin-card`, `field`/`error`/`help`,
+  `badge--role`/`badge--active`/`badge--inactive`, `btn btn--primary` — no new CSS, and the shared
+  admin layout's existing `session('status')`/`$errors` alert rendering covers success/validation
+  messages without the view needing its own.
+- Tests: 14 new cases in `tests/Feature/Admin/ProfileTest.php` — unauthenticated access (GET and
+  PUT) redirects to login; both roles can view their own profile; the password hash is never present
+  in the response body; a successful change works end-to-end (new hash persists, new password logs
+  in, old session stays authenticated); wrong current password is rejected and leaves the password
+  unchanged; weak password and mismatched confirmation are both rejected; 5 wrong attempts trigger
+  the rate limit (and a *correct* 6th attempt is still throttled); a successful change clears the
+  limiter; changing one account's password never touches another account's hash; a crafted
+  role/is_active/email payload is silently ignored; another session row is deleted from the
+  `sessions` table on a successful change. Full suite: **198/198 passing** (184 existing + 14 new) —
+  including every existing `UserManagementTest`/`AuthTest` case unaffected by the stronger global
+  password policy. Also manually verified end-to-end in a real browser (Playwright): both seeded
+  dev accounts (Super Admin, Certificate Manager) can view "My Profile", change their password, and
+  log back in with the new one.
+- Does not touch PDF Studio, the QR Generator, certificate records/templates, or any public-site
+  page. Does not change `Admin\UserController`/`UserPolicy`'s existing Super-Admin-only user
+  management.
+
 ## First real production deploy succeeded; integration branch reconciled; automatic push-to-main deployment activated (2026-10-15)
 
 - A fourth `workflow_dispatch` (dry_run: false) against `main` (commit `d5282a4cfe09465bc122d984c717d39f000c0e6c`) —
