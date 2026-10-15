@@ -2481,8 +2481,8 @@ tbody tr:nth-child(even) {
 }
 
 .person__av {
-  width: 80px;
-  height: 80px;
+  width: 88px;
+  height: 88px;
   margin: 0 auto 14px;
   display: grid;
   place-items: center;
