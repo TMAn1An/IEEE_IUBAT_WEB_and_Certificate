@@ -1,1 +1,0 @@
-import{S as e,h as t,t as n,x as r}from"./app-By20Q3pm.js";var i=e(),a=r(),o=t();(0,a.createRoot)(document.getElementById(`root`)).render((0,o.jsx)(i.StrictMode,{children:(0,o.jsx)(n,{})}));
