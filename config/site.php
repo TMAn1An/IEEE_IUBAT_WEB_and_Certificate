@@ -181,7 +181,14 @@ return [
        `photo` renders an <img> (with alt from name); otherwise `initials`
        fall back to the monogram avatar. `tel` carries a space-formatted
        personal number, but is never rendered on committee.php — pages opt in
-       explicitly via the person-card component's $tel flag (see CLAUDE.md). */
+       explicitly via the person-card component's $tel flag (see CLAUDE.md).
+       Optional `avatar_position` (CSS object-position value, e.g. 'top' or
+       '50% 20%') re-centers a photo's crop inside the circular frame for a
+       source image whose subject isn't centered -- set it per-person, never
+       assume one value fixes every photo. It can only re-center within what
+       the photo already shows: if a source photo is itself cropped (e.g. the
+       top of the head is outside the file), no object-position value can
+       recover those missing pixels -- that needs a replacement photo. */
     'people' => [
         /* Faculty advisors — no photos, no personal tel links; official
            role-based email addresses (public-safe, unlike personal tel) */

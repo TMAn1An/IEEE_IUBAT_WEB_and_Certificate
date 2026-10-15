@@ -42,8 +42,16 @@ class PdfStudioTest extends TestCase
         ]);
     }
 
-    /** A minimal, valid .pdftemplate bundle: project.json only (no PDF/fonts needed — TemplateProjectService never parses the PDF). */
-    private function projectBundle(string $name = 'Audit Certificate'): UploadedFile
+    /**
+     * A minimal, valid .pdftemplate bundle: project.json only (no PDF/fonts
+     * needed — TemplateProjectService never parses the PDF).
+     *
+     * @param  array<string, array<string, mixed>>|null  $mapping  Overrides
+     *   the default fully-mapped `mapping`. Pass `['fld_qr' => [...]]` alone
+     *   (QR only, matching the pre-fix pdfeditor saveToServer() behavior) to
+     *   reproduce the blank-sample-Excel bug for regression coverage.
+     */
+    private function projectBundle(string $name = 'Audit Certificate', ?array $mapping = null): UploadedFile
     {
         $project = [
             'format' => 'pdf-template-studio/project',
@@ -60,7 +68,7 @@ class PdfStudioTest extends TestCase
                 ['id' => 'fld_qr', 'label' => 'QR Code', 'type' => 'image', 'page' => 1, 'rect' => ['x' => 0.7, 'y' => 0.7, 'w' => 0.15, 'h' => 0.15], 'required' => false, 'style' => []],
             ],
             'formFields' => [],
-            'mapping' => [
+            'mapping' => $mapping ?? [
                 'fld_name' => ['kind' => 'column', 'column' => 'name', 'transform' => 'none'],
                 'fld_title' => ['kind' => 'column', 'column' => 'paper_title', 'transform' => 'none'],
                 'fld_photo' => ['kind' => 'column', 'column' => 'photo', 'transform' => 'none'],
@@ -121,6 +129,59 @@ class PdfStudioTest extends TestCase
         $get = $this->actingAs($admin)->get(route('admin.pdf-studio.api.templates.project.show', $template));
         $get->assertOk();
         $this->assertNotEmpty($get->streamedContent());
+    }
+
+    /**
+     * Regression for the blank-sample-Excel bug: a project saved with only
+     * the QR field mapped (`kind: 'column'`), and every other field left at
+     * the default `kind: 'none'` -- exactly what the pre-fix pdfeditor
+     * StudioApp.tsx saveToServer() produced, since it only ever set a
+     * mapping for the QR field. deriveSchema() already excludes the QR
+     * field unconditionally (it's system-generated), so this reproduces
+     * `editor_schema['fields'] === []`: no headers, nothing to import.
+     */
+    public function test_sample_xlsx_rejects_a_template_with_no_mapped_columns(): void
+    {
+        $admin = User::factory()->create();
+        $template = $this->draftTemplate($admin);
+
+        $this->actingAs($admin)->call('PUT', route('admin.pdf-studio.api.templates.project.store', $template), [
+            'qr_field_id' => 'fld_qr',
+            'recipient_field_id' => 'fld_name',
+        ], [], ['project' => $this->projectBundle(mapping: [
+            'fld_qr' => ['kind' => 'column', 'column' => '__qr_image__', 'transform' => 'none'],
+        ])]);
+
+        $template->refresh();
+        $this->assertSame([], $template->editor_schema['fields']);
+
+        $response = $this->actingAs($admin)->get(route('admin.pdf-studio.api.templates.sample', $template));
+
+        $response->assertStatus(422);
+        $response->assertSee('no participant columns configured', false);
+        $this->assertNotSame('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', $response->headers->get('Content-Type'));
+    }
+
+    public function test_sample_xlsx_downloads_the_correct_headers_for_a_fully_mapped_template(): void
+    {
+        $admin = User::factory()->create();
+        $template = $this->draftTemplate($admin);
+
+        $this->actingAs($admin)->call('PUT', route('admin.pdf-studio.api.templates.project.store', $template), [
+            'qr_field_id' => 'fld_qr',
+            'recipient_field_id' => 'fld_name',
+        ], [], ['project' => $this->projectBundle()]);
+
+        $response = $this->actingAs($admin)->get(route('admin.pdf-studio.api.templates.sample', $template));
+        $response->assertOk();
+
+        $path = tempnam(sys_get_temp_dir(), 'sample-check').'.xlsx';
+        file_put_contents($path, $response->streamedContent());
+        $sheet = IOFactory::load($path)->getActiveSheet();
+        $headers = $sheet->rangeToArray('A1:C1')[0];
+
+        $this->assertEqualsCanonicalizing(['name', 'paper_title', 'photo'], $headers);
+        unlink($path);
     }
 
     public function test_unauthenticated_user_cannot_reach_the_studio(): void

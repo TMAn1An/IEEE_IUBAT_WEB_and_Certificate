@@ -6,48 +6,63 @@
       Studio using this template's saved design — no intermediate files to download or re-upload.
     </p>
 
-    <h3>Expected columns</h3>
-    <table class="admin-table">
-      <thead><tr><th>Column</th><th>Field</th><th>Required</th><th>Type</th></tr></thead>
-      <tbody>
-        @foreach ($template->editor_schema['fields'] as $field)
-          <tr>
-            <td><code>{{ $field['column'] }}</code></td>
-            <td>{{ $field['label'] }}</td>
-            <td>{{ $field['required'] ? 'Required' : 'Optional' }}</td>
-            <td>{{ $field['type'] === 'image' ? 'Photo filename' : 'Text' }}</td>
-          </tr>
-        @endforeach
-      </tbody>
-    </table>
-    <p style="color:var(--muted)">
-      Certificate numbers, verification codewords and QR images are generated automatically —
-      do not add columns for them. For a photo field, put the image's filename in that column and
-      upload the matching image file below.
-    </p>
-    <a href="{{ route('admin.pdf-studio.api.templates.sample', $template) }}" class="btn btn--ghost">Download example spreadsheet</a>
+    @if (empty($template->editor_schema['fields']))
+      <div class="admin-card" style="background:var(--danger-bg, #fdecea); border-color:var(--danger, #c0392b)">
+        <strong>This template has no participant columns configured yet.</strong>
+        <p style="color:var(--muted)">
+          Every field on this template is either unmapped or fixed (no Excel column assigned), so
+          there is nothing for participants to fill in and no sample spreadsheet to generate.
+          Open this template in PDF Studio and, when saving, assign an Excel column name to each
+          field that should come from the participant spreadsheet (name, ID, etc.) — leave a field
+          blank there only if it's meant to stay fixed on every certificate.
+        </p>
+        <a href="{{ route('admin.pdf-studio.show', $template) }}" class="btn btn--primary">Open in PDF Studio</a>
+      </div>
+    @else
+      <h3>Expected columns</h3>
+      <table class="admin-table">
+        <thead><tr><th>Column</th><th>Field</th><th>Required</th><th>Type</th></tr></thead>
+        <tbody>
+          @foreach ($template->editor_schema['fields'] as $field)
+            <tr>
+              <td><code>{{ $field['column'] }}</code></td>
+              <td>{{ $field['label'] }}</td>
+              <td>{{ $field['required'] ? 'Required' : 'Optional' }}</td>
+              <td>{{ $field['type'] === 'image' ? 'Photo filename' : 'Text' }}</td>
+            </tr>
+          @endforeach
+        </tbody>
+      </table>
+      <p style="color:var(--muted)">
+        Certificate numbers, verification codewords and QR images are generated automatically —
+        do not add columns for them. For a photo field, put the image's filename in that column and
+        upload the matching image file below.
+      </p>
+      <a href="{{ route('admin.pdf-studio.api.templates.sample', $template) }}" class="btn btn--ghost">Download example spreadsheet</a>
 
-    <h3>Upload</h3>
-    <div class="field">
-      <label for="participants">Participant spreadsheet (.xlsx)</label>
-      <input type="file" id="participants" accept=".xlsx">
-    </div>
-    <div class="field">
-      <label for="photos">Participant photos (if this template has a photo field)</label>
-      <input type="file" id="photos" multiple accept="image/jpeg,image/png">
-    </div>
-    <button type="button" class="btn btn--primary" id="preview-btn">Validate &amp; preview</button>
+      <h3>Upload</h3>
+      <div class="field">
+        <label for="participants">Participant spreadsheet (.xlsx)</label>
+        <input type="file" id="participants" accept=".xlsx">
+      </div>
+      <div class="field">
+        <label for="photos">Participant photos (if this template has a photo field)</label>
+        <input type="file" id="photos" multiple accept="image/jpeg,image/png">
+      </div>
+      <button type="button" class="btn btn--primary" id="preview-btn">Validate &amp; preview</button>
 
-    <div id="preview-area" style="margin-top:20px;display:none">
-      <h3>Preview</h3>
-      <p id="preview-summary"></p>
-      <ul id="preview-errors" style="color:var(--danger)"></ul>
-      <table class="admin-table" id="preview-table"><thead></thead><tbody></tbody></table>
-      <button type="button" class="btn btn--primary" id="confirm-btn" style="margin-top:12px">Confirm &amp; Generate</button>
-    </div>
-    <p id="notice" style="color:var(--danger)"></p>
+      <div id="preview-area" style="margin-top:20px;display:none">
+        <h3>Preview</h3>
+        <p id="preview-summary"></p>
+        <ul id="preview-errors" style="color:var(--danger)"></ul>
+        <table class="admin-table" id="preview-table"><thead></thead><tbody></tbody></table>
+        <button type="button" class="btn btn--primary" id="confirm-btn" style="margin-top:12px">Confirm &amp; Generate</button>
+      </div>
+      <p id="notice" style="color:var(--danger)"></p>
+    @endif
   </div>
 
+  @unless (empty($template->editor_schema['fields']))
   <script>
     const templateId = {{ $template->id }};
     const apiBase = @json(url('/admin/api/pdf-studio'));
@@ -98,4 +113,5 @@
       window.location.href = studioShowBatchUrl.replace('__BATCH__', data.batch_id);
     });
   </script>
+  @endunless
 </x-layouts.admin>
