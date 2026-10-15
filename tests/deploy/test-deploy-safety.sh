@@ -503,14 +503,28 @@ run_db_backup() {
       echo "ERROR: database backup file failed gzip integrity check"
       exit 1
     fi
-    if ! zcat "$dump_path" | grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE'; then
+    # Decompress once to a temp file and grep that file, rather than piping zcat
+    # straight into grep -q -- see the matching comment in deploy-production.yml's
+    # own "backing up the database before migrating" step for why: grep -q's
+    # early exit on a real multi-table dump gets zcat SIGPIPE'd, and pipefail
+    # reports that as the pipeline's exit status even though grep matched fine.
+    sql_tmp="$(mktemp)"
+    if ! zcat "$dump_path" > "$sql_tmp"; then
+      echo "ERROR: could not decompress database backup for validation"
+      rm -f "$sql_tmp"
+      exit 1
+    fi
+    if ! grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE' "$sql_tmp"; then
       echo "ERROR: database backup does not look like a real SQL dump"
+      rm -f "$sql_tmp"
       exit 1
     fi
-    if ! zcat "$dump_path" | grep -qE 'CREATE TABLE .migrations.|CREATE TABLE .certificates.'; then
+    if ! grep -qE 'CREATE TABLE .migrations.|CREATE TABLE .certificates.' "$sql_tmp"; then
       echo "ERROR: database backup does not contain this application's tables"
+      rm -f "$sql_tmp"
       exit 1
     fi
+    rm -f "$sql_tmp"
     echo "Database backup verified: $dump_path"
   )
 }
@@ -645,6 +659,95 @@ EOF
   fi
 }
 
+# --- control case: demonstrates the real production bug (two consecutive
+# deploy failures, both a false "no CREATE TABLE / dump header found") --
+# piping zcat straight into grep -q under pipefail. grep -q exits as soon as
+# it has one match; on a dump with many tables that match lands long before
+# zcat finishes writing, so zcat gets SIGPIPE'd and pipefail reports the
+# pipeline's exit status as 141 even though grep matched successfully and
+# the dump is completely valid. A tiny 2-3-line fixture (as used by the
+# tests above) never reproduces this -- zcat finishes writing before grep
+# can match early, so there's no race. Only a realistic multi-table dump
+# exposes it, which is exactly why this shipped. ---
+test_zcat_grep_q_pipefail_false_negative_on_large_dump() {
+  local d="$1"
+  python3 -c "
+import random
+random.seed(0)
+lines = ['-- MariaDB dump 10.19  Distrib 10.6.16-MariaDB, for Linux (x86_64)', '--']
+for t in range(1, 32):
+    name = f'table_{t:02d}'
+    lines.append(f'CREATE TABLE \`{name}\` (id bigint(20) unsigned NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB;')
+    for row in range(400):
+        payload = ''.join(random.choice('abcdefghijklmnopqrstuvwxyz') for _ in range(60))
+        lines.append(f\"INSERT INTO \`{name}\` VALUES ({row},'{payload}');\")
+print('\n'.join(lines))
+" | gzip > "$d/large_dump.sql.gz"
+
+  local failures=0 iterations=10
+  for _ in $(seq 1 "$iterations"); do
+    if ! bash -c '
+      set -eo pipefail
+      zcat "'"$d"'/large_dump.sql.gz" | grep -q "^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE"
+    ' >/dev/null 2>&1; then
+      failures=$((failures + 1))
+    fi
+  done
+
+  if [ "$failures" -eq "$iterations" ]; then
+    ok "demonstrates the original bug: zcat | grep -q under pipefail reports failure on every run ($failures/$iterations) for a valid, complete, multi-table SQL dump"
+  else
+    bad "expected this control case (the unfixed zcat | grep -q pattern) to reproduce the SIGPIPE false negative on $iterations/$iterations runs, but only saw $failures/$iterations -- environment may no longer exhibit the race"
+  fi
+}
+
+# --- regression test for the fix: the *current* (decompress-to-file) validation
+# logic in run_db_backup must still accept a large, realistic, multi-table dump
+# -- i.e. it must not reintroduce the zcat | grep -q race the control case above
+# demonstrates. This is the exact shape of backup that failed twice in
+# production (31 CREATE TABLE statements, ~500KB+ gzipped) while the old
+# 3-line test fixture never caught it. ---
+test_db_backup_succeeds_with_large_multi_table_dump() {
+  local d="$1"
+  mkdir -p "$d/release" "$d/bin"
+  ln -sfn "$ROOT/vendor" "$d/release/vendor"
+  cat > "$d/release/.env" <<'ENVEOF'
+DB_DATABASE=ieee_prod
+DB_USERNAME=ieee_user
+DB_PASSWORD=secret
+ENVEOF
+  cat > "$d/bin/mysqldump" <<'EOF'
+#!/bin/bash
+echo "-- MariaDB dump 10.19  Distrib 10.6.16-MariaDB, for Linux (x86_64)"
+echo "--"
+for t in $(seq -w 1 31); do
+  name="table_$t"
+  echo "CREATE TABLE \`$name\` (id bigint(20) unsigned NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB;"
+  for row in $(seq 1 400); do
+    echo "INSERT INTO \`$name\` VALUES ($row,'padding-data-to-make-this-a-realistic-dump-size-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');"
+  done
+done
+echo 'CREATE TABLE `migrations` (id INT);'
+echo 'CREATE TABLE `certificates` (id INT);'
+EOF
+  chmod +x "$d/bin/mysqldump"
+  rm -f "$d/dump.sql.gz"
+
+  local all_passed=1
+  for i in 1 2 3 4 5; do
+    if ! PATH="$d/bin:$PATH" run_db_backup "$d/release" "$d/dump.sql.gz" >"$d/out.log" 2>&1; then
+      all_passed=0
+      break
+    fi
+  done
+
+  if [ "$all_passed" -eq 1 ] && gzip -t "$d/dump.sql.gz"; then
+    ok "a large, realistic multi-table dump (33 CREATE TABLE statements) passes every check on repeated runs -- the zcat|grep -q SIGPIPE false negative does not recur"
+  else
+    bad "a valid large multi-table dump was rejected: $(cat "$d/out.log")"
+  fi
+}
+
 # --- staleness guard, reproduced from .github/workflows/deploy-production.yml's
 # "guarding against deploying an outdated commit over a newer release" block
 # (kept in sync by hand with that embedded step) -- prevents an outdated
@@ -736,6 +839,8 @@ run db_backup_fails_closed_on_connection_failure
 run db_backup_fails_closed_on_generic_mysqldump_failure
 run db_backup_rejects_invalid_backup_file
 run db_backup_rejects_wrong_database
+run zcat_grep_q_pipefail_false_negative_on_large_dump
+run db_backup_succeeds_with_large_multi_table_dump
 run staleness_guard_logic
 
 echo

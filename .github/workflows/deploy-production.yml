@@ -505,7 +505,8 @@ jobs:
             cd '${{ env.REMOTE_RELEASES }}/$DEPLOY_SHA'
             mkdir -p '${{ env.REMOTE_BACKUPS }}/../db'
             option_file=\"\$(mktemp)\"
-            cleanup_option_file() { rm -f \"\$option_file\"; }
+            sql_tmp=\"\"
+            cleanup_option_file() { rm -f \"\$option_file\" \"\$sql_tmp\"; }
             trap cleanup_option_file EXIT
             chmod 600 \"\$option_file\"
             # write-db-backup-option-file.php parses the release's own .env directly
@@ -558,7 +559,24 @@ jobs:
               echo '::error::Database backup file failed gzip integrity check -- refusing to migrate.'
               exit 1
             fi
-            if ! zcat \"\$dump_path\" | grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE'; then
+            # Decompress once to a temp file and grep *that file*, rather than piping
+            # zcat straight into grep -q. grep -q stops reading as soon as it has one
+            # match and exits 0 -- on a real multi-table dump the match lands long
+            # before zcat finishes writing the rest, so zcat gets SIGPIPE when grep
+            # closes its end of the pipe. Under 'set -o pipefail' the pipeline's exit
+            # status is the *rightmost non-zero* status among all stages, so zcat's
+            # SIGPIPE (141) wins even though grep matched successfully -- the backup
+            # looked invalid every single time despite containing a valid header and
+            # all 31 application tables. Grepping a plain file has no producer to
+            # race against, so this can't recur. (Confirmed: a 3-line fixture never
+            # triggers the race because zcat finishes before grep can match early;
+            # a realistic ~30-table dump triggers it on every run.)
+            sql_tmp=\"\$(mktemp)\"
+            if ! zcat \"\$dump_path\" > \"\$sql_tmp\"; then
+              echo '::error::Could not decompress database backup for validation -- refusing to migrate.'
+              exit 1
+            fi
+            if ! grep -q '^-- MySQL dump\|^-- MariaDB dump\|CREATE TABLE' \"\$sql_tmp\"; then
               echo '::error::Database backup does not look like a real SQL dump (no CREATE TABLE / dump header found) -- refusing to migrate without a verified backup.'
               exit 1
             fi
@@ -566,15 +584,11 @@ jobs:
             # legacy WordPress database the same cPanel account may still host --
             # both could plausibly produce a file that passes the generic SQL-dump
             # check above, so check for a table name specific to this app's schema.
-            # (the dot wildcards match mysqldump's surrounding backtick quoting
-            # around identifiers without putting a literal backtick in this
-            # string -- an unescaped backtick here would be re-parsed as
-            # command substitution by the remote shell.)
-            if ! zcat \"\$dump_path\" | grep -qE 'CREATE TABLE .migrations.|CREATE TABLE .certificates.'; then
+            if ! grep -qE 'CREATE TABLE .migrations.|CREATE TABLE .certificates.' \"\$sql_tmp\"; then
               echo '::error::Database backup does not contain this application'\"'\"'s tables (migrations/certificates) -- refusing to migrate. Is DB_DATABASE pointing at the wrong (e.g. legacy WordPress) database?'
               exit 1
             fi
-            rm -f /tmp/mysqldump.err
+            rm -f /tmp/mysqldump.err \"\$sql_tmp\"
             echo \"Database backup verified: \$dump_path (\$(du -h \"\$dump_path\" | cut -f1))\"
           " || rollback
 
