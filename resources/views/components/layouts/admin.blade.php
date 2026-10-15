@@ -19,6 +19,7 @@
     </div>
     <ul class="admin-nav">
       <li><a href="{{ route('admin.dashboard') }}" class="{{ request()->routeIs('admin.dashboard') ? 'is-active' : '' }}">Dashboard</a></li>
+      <li><a href="{{ route('admin.profile.edit') }}" class="{{ request()->routeIs('admin.profile.*') ? 'is-active' : '' }}">My Profile</a></li>
       <li class="admin-nav__heading">PDF Certificates</li>
       <li><a href="{{ route('admin.pdf-certificates.index') }}" class="{{ request()->routeIs('admin.pdf-certificates.*', 'admin.pdf-studio.*') ? 'is-active' : '' }}">Templates &amp; Batches</a></li>
       <li><a href="{{ route('admin.certificates.index') }}" class="{{ request()->routeIs('admin.certificates.*') ? 'is-active' : '' }}">Certificate Records</a></li>
@@ -45,7 +46,7 @@
       @endcan
     </ul>
     <div class="admin-sidebar__foot">
-      {{ auth()->user()->name }}<br>
+      <a href="{{ route('admin.profile.edit') }}">{{ auth()->user()->name }}</a><br>
       <span style="opacity:.7">{{ auth()->user()->role->label() }}</span><br>
       <form method="POST" action="{{ route('admin.logout') }}" style="margin-top:8px">
         @csrf

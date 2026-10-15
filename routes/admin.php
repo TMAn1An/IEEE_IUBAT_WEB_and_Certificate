@@ -8,6 +8,7 @@ use App\Http\Controllers\Admin\DeletionRequestController;
 use App\Http\Controllers\Admin\PdfCertificatesController;
 use App\Http\Controllers\Admin\PdfStudioApiController;
 use App\Http\Controllers\Admin\PdfStudioController;
+use App\Http\Controllers\Admin\ProfileController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryController;
 use App\Http\Controllers\Admin\QrTool\QrCategoryFieldController;
 use App\Http\Controllers\Admin\QrTool\QrGenerateController;
@@ -40,6 +41,15 @@ Route::middleware(['auth', 'active'])->group(function () {
     Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 
     Route::get('/', [DashboardController::class, 'index'])->name('dashboard');
+
+    // Self-service "My Profile" — every authenticated admin, any role, can
+    // view their own account and change their own password. No {user}
+    // route parameter here at all (contrast the Super-Admin-only
+    // users.* resource just below): see Admin\ProfileController's docblock
+    // for why that's what actually guarantees a user can only ever change
+    // their own password, not a role check.
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::put('/profile/password', [ProfileController::class, 'updatePassword'])->name('profile.password.update');
 
     // Super-Admin-only; enforced in UserController via $this->authorize(),
     // not by hiding the nav link.
