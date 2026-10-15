@@ -13,7 +13,7 @@
 @endphp
 <div class="person{{ $rv ? ' rv' : '' }}">
   @if ($photoSrc)
-    <img class="person__av" src="{{ $photoSrc }}" alt="Photo of {{ $person['name'] }}" width="80" height="80" style="object-position: {{ $avatarPosition }};">
+    <img class="person__av" src="{{ $photoSrc }}" alt="Photo of {{ $person['name'] }}" width="88" height="88" style="object-position: {{ $avatarPosition }};">
   @else
     <div class="person__av">{{ $person['initials'] ?? '--' }}</div>
   @endif
