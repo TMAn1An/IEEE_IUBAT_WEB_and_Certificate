@@ -1,4 +1,5 @@
 <x-layouts.admin title="Upload Participants — {{ $template->name }}">
+  <x-pdf-studio-stepper :template="$template" current="participants" />
   <div class="admin-card" style="max-width:860px">
     <h2 style="margin-top:0">Upload participant data — {{ $template->name }}</h2>
     <p style="color:var(--muted)">
