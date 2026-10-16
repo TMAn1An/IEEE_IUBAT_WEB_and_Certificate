@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Enums\DeletableRecordType;
+use App\Enums\DeletionRequestStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Certificate;
 use App\Models\DeletionRequest;
@@ -43,9 +44,22 @@ class CertificateController extends Controller
             ->paginate(20)
             ->withQueryString();
 
+        // Drives the bulk "request deletion" checkboxes below: a row with
+        // an already-pending request is not re-selectable (and shows a
+        // "Pending" note instead) — matches the per-record detail page's
+        // own rule that only one pending request is allowed per record at
+        // a time. See docs/CERTIFICATE_SYSTEM.md §Bulk deletion requests.
+        $pendingCertificateIds = DeletionRequest::query()
+            ->where('record_type', DeletableRecordType::Certificate)
+            ->where('status', DeletionRequestStatus::Pending)
+            ->whereIn('record_id', $certificates->pluck('id'))
+            ->pluck('record_id')
+            ->all();
+
         return view('admin.certificates.index', [
             'certificates' => $certificates,
             'search' => $search,
+            'pendingCertificateIds' => $pendingCertificateIds,
         ]);
     }
 

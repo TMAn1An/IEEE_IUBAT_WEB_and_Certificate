@@ -1279,6 +1279,35 @@ extra query code). A separate, explicitly read-only "Deleted Records" / "Deleted
 exists for `super_admin` (`QrCertificatePolicy::viewDeleted()`/`CertificatePolicy::viewDeleted()`)
 — no Restore action yet, per the brief's explicit "keep it read-only for this phase."
 
+### Bulk deletion requests / Bulk deletion approvals
+
+Both steps of the workflow above also have a bulk form, added without introducing any new
+deletion logic — see `docs/CHANGELOG.md`'s entry for the full rationale. In short:
+
+- **Bulk deletion requests**: on Certificate Records (`admin.certificates.index`), a checkbox per
+  row without an already-pending request, a "Select this page" header checkbox (current page's
+  eligible rows only), a live count, and "Request deletion (N)" — one shared `reason`, the same
+  validation rule the single-item form uses, confirmed with the count before submitting. Route:
+  `POST /admin/certificates/bulk-request-deletion` (`BulkRequestDeletionRequest`,
+  `DeletionRequestController::bulkRequestForCertificates()`).
+- **Bulk deletion approvals**: on the Deletion Requests review queue, the same
+  checkbox/select-page/count pattern over pending, reviewable rows, and "Approve selected (N)" —
+  confirmed with the count AND the consequence (immediate soft-delete, not undoable here). Route:
+  `POST /admin/deletion-requests/bulk-approve` (`BulkApproveDeletionRequestsRequest`,
+  `DeletionRequestController::bulkApprove()`).
+- Both bulk actions are thin loops in `DeletionRequestService` (`bulkRequest()`/`bulkApprove()`)
+  over the exact same `request()`/`approve()` methods described above — same transaction/row-lock
+  per item, same audit events, same snapshot logic. A stale item at process time (duplicate
+  pending request, already reviewed, already deleted) is skipped and reported per-item; it never
+  fails the rest of the batch.
+- Authorization is re-checked per submitted id, server-side, in the Form Request's `authorize()`
+  — never inferred from the client-submitted id list. Any id that doesn't resolve to a real,
+  reviewable record/request for that user rejects the **whole** submission (403, nothing applied).
+- Self-approval: unchanged from §Authorization above — the bulk path does not add a stricter rule
+  than the single-item path.
+- Selection state lives only in the page's own JS (vanilla, no new dependency); a full page
+  reload (pagination/search) always starts from an empty selection.
+
 ### Data retention
 
 Soft-deleted records stay in the primary database indefinitely — no automatic permanent-deletion
