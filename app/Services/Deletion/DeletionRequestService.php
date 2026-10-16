@@ -149,6 +149,76 @@ class DeletionRequestService
         });
     }
 
+    /**
+     * Bulk variant of request() for the Certificate Records / QR Records
+     * "select rows -> Request deletion (N)" action. Deliberately thin: each
+     * record goes through the exact same request() call above (its own
+     * transaction, its own row lock, its own duplicate-pending check), so a
+     * single stale/duplicate item only fails itself -- see
+     * docs/CERTIFICATE_SYSTEM.md §Bulk deletion requests. Authorization
+     * (who may create a request at all) is checked once, by the Form
+     * Request, before this ever runs; this method does not re-derive
+     * authority from the client-submitted id list.
+     *
+     * @param  list<int>  $recordIds
+     * @return array{requested: list<int>, skipped: array<int, string>}
+     */
+    public function bulkRequest(DeletableRecordType $type, array $recordIds, User $requester, string $reason): array
+    {
+        $requested = [];
+        $skipped = [];
+
+        foreach (array_unique($recordIds) as $recordId) {
+            try {
+                $this->request($type, (int) $recordId, $requester, $reason);
+                $requested[] = (int) $recordId;
+            } catch (ValidationException $e) {
+                $skipped[(int) $recordId] = $e->errors()['reason'][0] ?? 'Could not be requested.';
+            }
+        }
+
+        return ['requested' => $requested, 'skipped' => $skipped];
+    }
+
+    /**
+     * Bulk variant of approve() for the Deletion Requests review queue's
+     * "select pending rows -> Approve selected (N)" action. Same reasoning
+     * as bulkRequest() above: each id goes through the real approve() call
+     * (assertReviewer(), lockForUpdate(), the still-pending/still-active
+     * re-checks, the snapshot, the soft-delete, both audit events) so two
+     * concurrent bulk submissions still can't double-approve the same
+     * request -- the row lock inside approve() makes the second submission's
+     * re-check of `status !== Pending` see the first submission's write.
+     *
+     * @param  list<int>  $deletionRequestIds
+     * @return array{approved: list<int>, skipped: array<int, string>}
+     */
+    public function bulkApprove(array $deletionRequestIds, User $reviewer): array
+    {
+        $approved = [];
+        $skipped = [];
+
+        foreach (array_unique($deletionRequestIds) as $id) {
+            $id = (int) $id;
+            $deletionRequest = DeletionRequest::find($id);
+
+            if ($deletionRequest === null) {
+                $skipped[$id] = 'Request not found.';
+
+                continue;
+            }
+
+            try {
+                $this->approve($deletionRequest, $reviewer);
+                $approved[] = $id;
+            } catch (ValidationException $e) {
+                $skipped[$id] = $e->errors()['status'][0] ?? 'Could not be approved.';
+            }
+        }
+
+        return ['approved' => $approved, 'skipped' => $skipped];
+    }
+
     /** §Rejection flow: the target record is never touched. */
     public function reject(DeletionRequest $deletionRequest, User $reviewer, ?string $reviewNote): DeletionRequest
     {

@@ -137,6 +137,12 @@ Route::middleware(['auth', 'active'])->group(function () {
     // deletion. The only path to a soft-deleted certificate is the
     // request/review workflow below.
     Route::post('/certificates/{certificate}/request-deletion', [DeletionRequestController::class, 'requestForCertificate'])->name('certificates.request-deletion');
+    // Bulk sibling of the per-record route above -- Certificate Records
+    // list page's "select rows -> Request deletion (N)" action. A literal
+    // path segment (never "/certificates/{certificate}/...") so it can
+    // never be captured by the model-bound route's {certificate} wildcard.
+    // See docs/CERTIFICATE_SYSTEM.md §Bulk deletion requests.
+    Route::post('/certificates/bulk-request-deletion', [DeletionRequestController::class, 'bulkRequestForCertificates'])->name('certificates.request-deletion.bulk');
 
     // ------------------------------------------------------------------
     // B. QR Generator — fully independent of PDF Certificates/
@@ -227,6 +233,10 @@ Route::middleware(['auth', 'active'])->group(function () {
     // deletion POST routes live above, next to the record type they
     // target; only the review queue itself lives here.
     Route::get('/deletion-requests', [DeletionRequestController::class, 'index'])->name('deletion-requests.index');
+    // Bulk sibling of .approve below -- a literal path segment, never
+    // captured by the {deletionRequest}-bound route's wildcard. See
+    // docs/CERTIFICATE_SYSTEM.md §Bulk deletion approvals.
+    Route::post('/deletion-requests/bulk-approve', [DeletionRequestController::class, 'bulkApprove'])->name('deletion-requests.bulk-approve');
     Route::post('/deletion-requests/{deletionRequest}/approve', [DeletionRequestController::class, 'approve'])->name('deletion-requests.approve');
     Route::post('/deletion-requests/{deletionRequest}/reject', [DeletionRequestController::class, 'reject'])->name('deletion-requests.reject');
 

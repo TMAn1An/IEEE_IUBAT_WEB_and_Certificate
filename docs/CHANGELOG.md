@@ -3,6 +3,49 @@
 Entries are added after each phase (or any significant change), newest first. This is a
 project-behavior changelog, not a raw git log — explain what changed and why in plain English.
 
+## Bulk deletion requests and bulk approvals (2026-10-16)
+
+- Extended the existing Controlled Deletion workflow (see §Controlled deletion below) with bulk
+  variants of both of its steps, reusing the same service, policy and audit path end to end — no
+  parallel system:
+  - **Certificate Records** (`admin.certificates.index`): a checkbox per row that does not already
+    have a pending deletion request, a "Select this page" header checkbox (current page's eligible
+    rows only — never implies "every certificate"), a live selected count, and a "Request deletion
+    (N)" action that collects one shared `reason` (the same `required|string|max:1000` rule the
+    single-item form already used) and confirms the count before submitting
+    (`POST /admin/certificates/bulk-request-deletion`, `BulkRequestDeletionRequest`,
+    `DeletionRequestController::bulkRequestForCertificates()`).
+  - **Deletion Requests** review queue: the same checkbox/"Select this page"/count pattern, scoped
+    to pending rows the viewer is allowed to review, and an "Approve selected (N)" action whose
+    confirmation names both the count and the consequence (immediate, un-undoable soft-delete)
+    (`POST /admin/deletion-requests/bulk-approve`, `BulkApproveDeletionRequestsRequest`,
+    `DeletionRequestController::bulkApprove()`).
+- **No new deletion logic was written.** `DeletionRequestService::bulkRequest()` and
+  `::bulkApprove()` are thin loops over the existing `request()`/`approve()` methods — each id gets
+  its own transaction, its own `lockForUpdate()`, its own re-validation at process time (not just at
+  submit time), so a stale item (already has a pending request, already reviewed, already deleted)
+  is skipped and reported, not a batch failure, and a double-submitted batch can't double-apply.
+- **Authorization is per-item, server-side, never trusts the submitted id list**:
+  `BulkRequestDeletionRequest::authorize()` reuses `DeletionRequestPolicy::create()` (same
+  role-based check as the single-item route); `BulkApproveDeletionRequestsRequest::authorize()`
+  loads every submitted id and checks `DeletionRequestPolicy::review()` against each one
+  individually, rejecting the **whole** submission (403, nothing applied) if any id doesn't resolve
+  to a real, reviewable request for that user — a malformed or partially-unauthorized batch is never
+  partially applied.
+- Self-approval: the existing single-item policy currently allows a Super Admin to approve their own
+  request (documented limitation, see §Authorization below) — the bulk path deliberately preserves
+  this rather than inventing a stricter rule for bulk only (`BulkDeletionTest::test_bulk_approve_allows_a_super_admin_to_approve_their_own_request_matching_single_item_behavior`).
+  If/when the single-item rule changes, the bulk path inherits it automatically (same policy method).
+- Selection lives only in the page's in-memory JS state (plain vanilla JS, no new dependency, no
+  Alpine/localStorage) — a full page reload (pagination, search) always starts from an empty
+  selection, so a stale selection can never silently apply to a different page or filter's rows.
+- New tests: `tests/Feature/Admin/BulkDeletionTest.php` (13 cases) covering partial-subset
+  selection, stale-item skipping within a mixed batch, whole-batch rejection for an unauthorized
+  user and for a malformed/out-of-authority id, double-submit idempotency for both the request and
+  approve paths, the preserved self-approval behavior, and that a bulk-approved certificate's public
+  verification result matches the single-item flow's. All 25 pre-existing
+  `ControlledDeletionTest` cases pass unmodified.
+
 ## Self-service Admin Profile and Change Password (2026-10-15)
 
 - Added "My Profile" (`admin.profile.edit` / `admin.profile.password.update`,
