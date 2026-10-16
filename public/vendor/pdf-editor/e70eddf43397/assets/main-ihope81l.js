@@ -1,0 +1,1 @@
+import{C as e,S as t,g as n,t as r}from"./app-mI3ygQPy.js";var i=e(),a=t(),o=n();(0,a.createRoot)(document.getElementById(`root`)).render((0,o.jsx)(i.StrictMode,{children:(0,o.jsx)(r,{})}));
